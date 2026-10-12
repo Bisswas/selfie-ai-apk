@@ -28,7 +28,7 @@ jobs:
             zlib1g-dev libncurses5-dev libffi-dev libssl-dev cmake build-essential
 
       - name: Install Buildozer
-        run: pip install buildozer "cython<3" virtualenv
+        run: pip install buildozer==1.5.0 "cython<3" virtualenv
 
       - name: Download model files
         run: |
@@ -41,7 +41,7 @@ jobs:
           path: |
             .buildozer
             ~/.buildozer
-          key: buildozer-${{ hashFiles('buildozer.spec') }}
+          key: buildozer-v2-${{ hashFiles('buildozer.spec') }}
 
       - name: Build APK
         run: buildozer -v android debug
