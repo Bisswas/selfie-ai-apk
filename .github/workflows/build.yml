@@ -12,6 +12,11 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      - name: Download model files
+        run: |
+          python3 download_models.py
+          test $(ls models | wc -l) -ge 9 || (echo "Some models failed to download" && exit 1)
+
       - name: Cache Buildozer
         uses: actions/cache@v4
         with:
