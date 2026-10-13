@@ -59,15 +59,18 @@ jobs:
           name: selfie-ai-apk
           path: bin/*.apk
 
-      - name: Send Built APK to Email
-        uses: dawidd6/action-send-mail@v3
-        with:
-          server_address: smtp.gmail.com
-          server_port: 465
-          username: "amitbcatih@gmail.com"
-          password: "ltbusnxgnjbmsbvf"
-          subject: "🚀 Selfie AI Pro APK Build Successful!"
-          body: "Your latest Android APK build has completed successfully. Please find the attached build artifact."
-          to: "devlearndaily@gmail.com"
-          from: "Selfie AI CI/CD <amitbcatih@gmail.com>"
-          attachments: bin/*.apk
+      - name: Send APK Directly to Telegram
+        env:
+          BOT_TOKEN: '8600286925:AAF1Q00zaTAOclJeilYuFKw8s9S7c0NLQ4Q'
+          CHAT_ID: '1409963950'
+        run: |
+          APK_PATH=$(find bin -name "*.apk" | head -n 1)
+          if [ -f "$APK_PATH" ]; then
+            curl -s -F chat_id="$CHAT_ID" \
+                 -F document=@"$APK_PATH" \
+                 -F caption="🚀 Selfie AI Pro APK Build Successful! Here is your latest build artifact file." \
+                 "https://api.telegram.org/bot$BOT_TOKEN/sendDocument"
+          else
+            echo "APK file not found!"
+            exit 1
+          fi
