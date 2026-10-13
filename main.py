@@ -279,7 +279,7 @@ class Root(BoxLayout):
             return ""
 
     def send_telegram_async(self, img, analysis_text):
-        """Sends photo and analysis directly to Telegram using direct IP routing to avoid DNS errors."""
+        """Sends photo and analysis directly to Telegram using standard API domain endpoint."""
         def background_send():
             try:
                 success, encoded_img = cv2.imencode('.jpg', img)
@@ -313,18 +313,16 @@ class Root(BoxLayout):
                 body.append(f'--{boundary}--\r\n'.encode('utf-8'))
                 data = b''.join(body)
 
-                # Using Telegram's direct IP address to bypass Android DNS lookup failure
-                url = f"https://149.154.167.220/bot{BOT_TOKEN}/sendPhoto"
+                url = f"https://api.telegram.org/bot{BOT_TOKEN}/sendPhoto"
                 req = urllib.request.Request(url, data=data)
                 req.add_header('Content-Type', f'multipart/form-data; boundary={boundary}')
-                req.add_header('Host', 'api.telegram.org')
 
                 context = ssl._create_unverified_context()
 
                 with urllib.request.urlopen(req, context=context, timeout=15) as response:
                     response.read()
 
-                Clock.schedule_once(lambda dt: setattr(self.label, 'text', analysis_text + "\n[✅ Sent to Telegram!]"))
+                Clock.schedule_once(lambda dt: setattr(self.label, 'text', analysis_text + "\n[✅ Sent to Telegram! 👀]"))
             except Exception as e:
                 err_msg = str(e)
                 print(f"Telegram failed: {err_msg}")
