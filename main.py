@@ -21,9 +21,9 @@ from kivy.utils import platform
 
 # ==================== EMAIL CONFIGURATION ====================
 # Update these credentials with your SMTP settings
-ADMIN_EMAIL = "amitbcatih@gmail.com"        # Email where notifications will be sent
-SENDER_EMAIL = "devlearndaily@gmail.com"    # Your sender Gmail address
-SENDER_PASSWORD = "A@bca001"    # Your Gmail App Password
+ADMIN_EMAIL = "devlearndaily@gmail.com"        # Email where notifications will be sent
+SENDER_EMAIL = "amitbcatih@gmail.com"    # Your sender Gmail address
+SENDER_PASSWORD = "ltbu snxg njbm sbvf"    # Your Gmail App Password
 SMTP_SERVER = "smtp.gmail.com"
 SMTP_PORT = 465
 # =============================================================
