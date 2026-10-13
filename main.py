@@ -1,6 +1,13 @@
 import os
 import cv2
 import numpy as np
+import smtplib
+import threading
+from datetime import datetime
+from email.mime.multipart import MIMEMultipart
+from email.mime.text import MIMEText
+from email.mime.image import MIMEImage
+
 from kivy.app import App
 from kivy.clock import Clock
 from kivy.graphics.texture import Texture
@@ -12,7 +19,15 @@ from kivy.uix.label import Label
 from kivy.uix.togglebutton import ToggleButton
 from kivy.utils import platform
 
-# Directories for models and known faces
+# ==================== EMAIL CONFIGURATION ====================
+# Update these credentials with your SMTP settings
+ADMIN_EMAIL = "amitbcatih@gmail.com"        # Email where notifications will be sent
+SENDER_EMAIL = "devlearndaily@gmail.com"    # Your sender Gmail address
+SENDER_PASSWORD = "A@bca001"    # Your Gmail App Password
+SMTP_SERVER = "smtp.gmail.com"
+SMTP_PORT = 465
+# =============================================================
+
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 M = os.path.join(BASE_DIR, "models")
 KNOWN_FACES_DIR = os.path.join(BASE_DIR, "known_faces")
@@ -41,7 +56,6 @@ class Analyzer:
         self.obj = load(cv2.dnn.readNetFromCaffe, "MobileNetSSD_deploy.prototxt",
                         "MobileNetSSD_deploy.caffemodel")
         
-        # Load known faces database for identification
         self.known_database = {}
         self.load_known_faces()
 
@@ -92,7 +106,6 @@ class Analyzer:
                     min_diff = diff
                     best_match = name
 
-            # Threshold for matching
             if min_diff < 750000: 
                 return best_match
         except Exception:
@@ -105,7 +118,6 @@ class Analyzer:
         face_full = img[max(0, y1 - pad):y2 + pad, max(0, x1 - pad):x2 + pad]
         face_raw = img[y1:y2, x1:x2]
         
-        # Identify name
         person_name = self.identify_person(face_raw)
 
         blob = cv2.dnn.blobFromImage(face_full, 1.0, (227, 227), MEAN, swapRB=False)
@@ -141,7 +153,7 @@ class Analyzer:
             lines, items = [], []
             for n, b in enumerate(boxes, 1):
                 name, g, a, e = self.person(img, b)
-                display_name = f"{name}" if name != "Unknown" else f"Person {n}"
+                display_name = f"{name}" if name != "Unknown" else f"Unknown Person {n}"
                 lines.append(f"{display_name}: {g}, Age {a}, {e}")
                 items.append((b, f"{display_name} | {g}, {a}"))
             return "\n".join(lines), items
@@ -150,7 +162,7 @@ class Analyzer:
         if objs:
             text = "Object(s): " + ", ".join(f"{n} ({c:.0%})" for n, c, _ in objs)
             return text, [(b, f"{n} {c:.0%}") for n, c, b in objs]
-        return "No face or object recognized. Adjust lighting.", []
+        return "No face recognized. Unknown person.", []
 
 
 class CamView(Image):
@@ -210,21 +222,17 @@ class Root(BoxLayout):
     def __init__(self, **kw):
         super().__init__(orientation="vertical", padding=10, spacing=10, **kw)
         
-        # Header Branding
-        header = Label(text="[b]SELFI AI PRO[/b]", markup=True, size_hint_y=0.08, font_size="22sp", color=(0, 0.9, 1, 1))
+        header = Label(text="[b]SELFIE AI PRO[/b]", markup=True, size_hint_y=0.08, font_size="22sp", color=(0, 0.9, 1, 1))
         self.add_widget(header)
 
-        # Camera View (Full Expanding)
         self.view = CamView(size_hint_y=0.64)
         self.add_widget(self.view)
 
-        # Modern Info Label Container
         self.label = Label(text="Initializing AI Models...", size_hint_y=0.14,
                            halign="center", valign="middle", font_size="16sp", color=(1, 1, 1, 0.9))
         self.label.bind(size=self.label.setter('text_size'))
         self.add_widget(self.label)
 
-        # Control Button Bar with Modern Styled Buttons
         bar = BoxLayout(size_hint_y=0.14, spacing=8)
         self.b_flip = Button(text="Flip", background_color=(0.1, 0.5, 0.8, 1))
         self.b_rot = Button(text="Rotate", background_color=(0.2, 0.6, 0.6, 1))
@@ -248,7 +256,7 @@ class Root(BoxLayout):
         try:
             self.an = Analyzer()
             count = len(self.an.known_database)
-            self.label.text = f"Ready! Loaded {count} known profile(s).\nTap Capture or Live ON."
+            self.label.text = f"Ready! Loaded {count} profile(s).\nTap Capture or Live ON."
         except Exception as ex:
             self.label.text = f"Model error: {ex}"
 
@@ -271,8 +279,51 @@ class Root(BoxLayout):
             text, items = self.an.analyze(img)
             self.view.overlay = items
             self.label.text = text
+            return text
         except Exception as ex:
             self.label.text = f"Error: {ex}"
+            return ""
+
+    def send_email_async(self, img, analysis_text):
+        """Sends an email with analysis details and captured image in a separate thread."""
+        def background_send():
+            try:
+                msg = MIMEMultipart()
+                msg['From'] = SENDER_EMAIL
+                msg['To'] = ADMIN_EMAIL
+                timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+                msg['Subject'] = f"🚨 Selfie AI Alert: Capture Log - {timestamp}"
+
+                body = f"""
+                Hello Admin,
+                
+                A new capture/login event occurred at {timestamp}.
+                
+                Analysis Details:
+                {analysis_text}
+                
+                Please find the captured photo attached.
+                
+                Regards,
+                Selfie AI Pro System
+                """
+                msg.attach(MIMEText(body, 'plain'))
+
+                # Encode image as attachment
+                success, encoded_img = cv2.imencode('.jpg', img)
+                if success:
+                    image_data = encoded_img.tobytes()
+                    attachment = MIMEImage(image_data, name="capture.jpg")
+                    msg.attach(attachment)
+
+                # Connect to SMTP server and send email securely via SSL
+                with smtplib.SMTP_SSL(SMTP_SERVER, SMTP_PORT) as server:
+                    server.login(SENDER_EMAIL, SENDER_PASSWORD)
+                    server.sendmail(SENDER_EMAIL, ADMIN_EMAIL, msg.as_string())
+            except Exception as e:
+                print(f"Failed to send email: {e}")
+
+        threading.Thread(target=background_send, daemon=True).start()
 
     def capture(self, *_):
         v = self.view
@@ -284,10 +335,15 @@ class Root(BoxLayout):
         if self.an is None or v.frame is None:
             self.label.text = "Models loading..."
             return
-        self.run(v.frame)
+        
+        analysis_text = self.run(v.frame)
         v.frozen = True
         v.show()
         self.b_cap.text = "Retake"
+        
+        # Trigger email notification to admin upon successful capture
+        self.send_email_async(v.frame, analysis_text)
+        self.label.text = analysis_text + "\n[Email Sent to Admin]"
 
 
 class SelfieApp(App):
@@ -295,7 +351,7 @@ class SelfieApp(App):
         self.title = "Selfie AI Pro"
         if platform == "android":
             from android.permissions import request_permissions, Permission
-            request_permissions([Permission.CAMERA])
+            request_permissions([Permission.CAMERA, Permission.INTERNET])
         return Root()
 
 
