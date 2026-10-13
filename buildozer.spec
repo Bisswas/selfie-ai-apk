@@ -5,10 +5,10 @@ package.domain = org.example
 source.dir = .
 source.include_exts = py,png,jpg,jpeg,kv,prototxt,caffemodel,onnx
 version = 0.1
-requirements = python3,kivy==2.3.0,numpy,opencv,android,openssl,certifi
+requirements = python3,kivy==2.3.0,numpy,opencv,android,openssl,certifi,plyer
+android.permissions = CAMERA,INTERNET,ACCESS_FINE_LOCATION,ACCESS_COARSE_LOCATION
 orientation = portrait
 fullscreen = 0
-android.permissions = CAMERA,INTERNET
 android.api = 33
 android.minapi = 24
 android.ndk = 25b
