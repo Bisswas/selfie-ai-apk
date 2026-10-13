@@ -1,10 +1,12 @@
 import os
-import cv2
-import numpy as np
+import ssl
 import threading
 import urllib.request
-import ssl
 from datetime import datetime
+
+import cv2
+import numpy as np
+import certifi
 
 from kivy.app import App
 from kivy.clock import Clock
@@ -36,6 +38,7 @@ MEAN = (78.4263377603, 87.7689143744, 114.895847746)
 
 BACK, FRONT = 0, 1
 
+
 def load(fn, *a):
     return fn(*[os.path.join(M, x) for x in a])
 
@@ -49,27 +52,23 @@ class Analyzer:
         self.emotion = cv2.dnn.readNetFromONNX(os.path.join(M, "emotion-ferplus-8.onnx"))
         self.obj = load(cv2.dnn.readNetFromCaffe, "MobileNetSSD_deploy.prototxt",
                         "MobileNetSSD_deploy.caffemodel")
-        
+
         self.known_database = {}
         self.load_known_faces()
 
     def load_known_faces(self):
         if not os.path.exists(KNOWN_FACES_DIR):
-            os.makedirs(KNOWN_FACES_DIR, exist_ok=True)
             return
-        
         for filename in os.listdir(KNOWN_FACES_DIR):
             if filename.lower().endswith(('.png', '.jpg', '.jpeg')):
                 name = os.path.splitext(filename)[0].replace("_", " ").title()
-                path = os.path.join(KNOWN_FACES_DIR, filename)
-                img = cv2.imread(path)
+                img = cv2.imread(os.path.join(KNOWN_FACES_DIR, filename))
                 if img is not None:
                     faces = self.faces(img)
                     if faces:
                         x1, y1, x2, y2 = faces[0]
                         face_crop = cv2.resize(img[y1:y2, x1:x2], (100, 100))
-                        gray_face = cv2.cvtColor(face_crop, cv2.COLOR_BGR2GRAY)
-                        self.known_database[name] = gray_face
+                        self.known_database[name] = cv2.cvtColor(face_crop, cv2.COLOR_BGR2GRAY)
 
     def faces(self, img):
         h, w = img.shape[:2]
@@ -88,19 +87,14 @@ class Analyzer:
     def identify_person(self, face_img):
         if not self.known_database:
             return "Unknown"
-        
         try:
             gray_test = cv2.cvtColor(cv2.resize(face_img, (100, 100)), cv2.COLOR_BGR2GRAY)
-            best_match = "Unknown"
-            min_diff = float("inf")
-
+            best_match, min_diff = "Unknown", float("inf")
             for name, ref_face in self.known_database.items():
                 diff = np.sum(cv2.absdiff(gray_test, ref_face))
                 if diff < min_diff:
-                    min_diff = diff
-                    best_match = name
-
-            if min_diff < 750000: 
+                    min_diff, best_match = diff, name
+            if min_diff < 750000:
                 return best_match
         except Exception:
             pass
@@ -111,7 +105,7 @@ class Analyzer:
         pad = 20
         face_full = img[max(0, y1 - pad):y2 + pad, max(0, x1 - pad):x2 + pad]
         face_raw = img[y1:y2, x1:x2]
-        
+
         person_name = self.identify_person(face_raw)
 
         blob = cv2.dnn.blobFromImage(face_full, 1.0, (227, 227), MEAN, swapRB=False)
@@ -119,12 +113,12 @@ class Analyzer:
         g = GENDERS[int(self.gender.forward()[0].argmax())]
         self.age.setInput(blob)
         a = AGES[int(self.age.forward()[0].argmax())]
-        
+
         gray = cv2.cvtColor(face_raw, cv2.COLOR_BGR2GRAY)
         gray = cv2.resize(gray, (64, 64)).astype(np.float32).reshape(1, 1, 64, 64)
         self.emotion.setInput(gray)
         e = EMOTIONS[int(self.emotion.forward()[0].argmax())]
-        
+
         return person_name, g, a, e
 
     def objects(self, img):
@@ -147,11 +141,11 @@ class Analyzer:
             lines, items = [], []
             for n, b in enumerate(boxes, 1):
                 name, g, a, e = self.person(img, b)
-                display_name = f"{name}" if name != "Unknown" else f"Unknown Person {n}"
+                display_name = name if name != "Unknown" else f"Unknown Person {n}"
                 lines.append(f"{display_name}: {g}, Age {a}, {e}")
                 items.append((b, f"{display_name} | {g}, {a}"))
             return "\n".join(lines), items
-        
+
         objs = self.objects(img)
         if objs:
             text = "Object(s): " + ", ".join(f"{n} ({c:.0%})" for n, c, _ in objs)
@@ -215,15 +209,17 @@ class CamView(Image):
 class Root(BoxLayout):
     def __init__(self, **kw):
         super().__init__(orientation="vertical", padding=10, spacing=10, **kw)
-        
-        header = Label(text="[b]SELFIE AI PRO[/b]", markup=True, size_hint_y=0.08, font_size="22sp", color=(0, 0.9, 1, 1))
+
+        header = Label(text="[b]SELFIE AI PRO[/b]", markup=True, size_hint_y=0.08,
+                       font_size="22sp", color=(0, 0.9, 1, 1))
         self.add_widget(header)
 
         self.view = CamView(size_hint_y=0.64)
         self.add_widget(self.view)
 
         self.label = Label(text="Initializing AI Models...", size_hint_y=0.14,
-                           halign="center", valign="middle", font_size="16sp", color=(1, 1, 1, 0.9))
+                           halign="center", valign="middle", font_size="16sp",
+                           color=(1, 1, 1, 0.9))
         self.label.bind(size=self.label.setter('text_size'))
         self.add_widget(self.label)
 
@@ -240,8 +236,8 @@ class Root(BoxLayout):
 
         for b in (self.b_flip, self.b_rot, self.b_live, self.b_cap):
             bar.add_widget(b)
-        
         self.add_widget(bar)
+
         self.an = None
         Clock.schedule_once(self.load_models, 0.5)
         Clock.schedule_interval(self.live_tick, 1.0)
@@ -279,54 +275,47 @@ class Root(BoxLayout):
             return ""
 
     def send_telegram_async(self, img, analysis_text):
-        """Sends photo and analysis directly to Telegram using standard API domain endpoint."""
+        """Sends the photo + analysis to Telegram in a background thread."""
         def background_send():
             try:
-                success, encoded_img = cv2.imencode('.jpg', img)
-                if not success:
+                ok, encoded = cv2.imencode('.jpg', img)
+                if not ok:
                     return
-                photo_bytes = encoded_img.tobytes()
+                photo_bytes = encoded.tobytes()
 
                 timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-                caption = f"🚨 Selfie AI Alert: Capture Log\nTime: {timestamp}\n\n{analysis_text}"
+                caption = f"Selfie AI - Capture Log\nTime: {timestamp}\n\n{analysis_text}"
 
-                boundary = '----------------Boundary_SelfieAI_$'
+                boundary = '----------------Boundary_SelfieAI_x7'
                 body = []
-
-                # chat_id field
-                body.append(f'--{boundary}\r\n'.encode('utf-8'))
+                body.append(f'--{boundary}\r\n'.encode())
                 body.append(b'Content-Disposition: form-data; name="chat_id"\r\n\r\n')
-                body.append(f'{CHAT_ID}\r\n'.encode('utf-8'))
-
-                # caption field
-                body.append(f'--{boundary}\r\n'.encode('utf-8'))
+                body.append(f'{CHAT_ID}\r\n'.encode())
+                body.append(f'--{boundary}\r\n'.encode())
                 body.append(b'Content-Disposition: form-data; name="caption"\r\n\r\n')
                 body.append(f'{caption}\r\n'.encode('utf-8'))
-
-                # photo file field
-                body.append(f'--{boundary}\r\n'.encode('utf-8'))
+                body.append(f'--{boundary}\r\n'.encode())
                 body.append(b'Content-Disposition: form-data; name="photo"; filename="capture.jpg"\r\n')
                 body.append(b'Content-Type: image/jpeg\r\n\r\n')
                 body.append(photo_bytes)
                 body.append(b'\r\n')
-
-                body.append(f'--{boundary}--\r\n'.encode('utf-8'))
+                body.append(f'--{boundary}--\r\n'.encode())
                 data = b''.join(body)
 
                 url = f"https://api.telegram.org/bot{BOT_TOKEN}/sendPhoto"
                 req = urllib.request.Request(url, data=data)
                 req.add_header('Content-Type', f'multipart/form-data; boundary={boundary}')
-
-                context = ssl._create_unverified_context()
-
-                with urllib.request.urlopen(req, context=context, timeout=15) as response:
+                context = ssl.create_default_context(cafile=certifi.where())
+                with urllib.request.urlopen(req, context=context, timeout=20) as response:
                     response.read()
 
-                Clock.schedule_once(lambda dt: setattr(self.label, 'text', analysis_text + "\n[✅ Sent to Telegram! 👀]"))
+                Clock.schedule_once(lambda dt: setattr(
+                    self.label, 'text', analysis_text + "\n[Sent to Telegram]"))
             except Exception as e:
-                err_msg = str(e)
-                print(f"Telegram failed: {err_msg}")
-                Clock.schedule_once(lambda dt: setattr(self.label, 'text', analysis_text + f"\n[❌ Telegram Failed: {err_msg[:30]}]"))
+                err = str(e)[:40]
+                print(f"Telegram failed: {e}")
+                Clock.schedule_once(lambda dt: setattr(
+                    self.label, 'text', analysis_text + f"\n[Telegram failed: {err}]"))
 
         threading.Thread(target=background_send, daemon=True).start()
 
@@ -340,14 +329,14 @@ class Root(BoxLayout):
         if self.an is None or v.frame is None:
             self.label.text = "Models loading..."
             return
-        
+
         analysis_text = self.run(v.frame)
         v.frozen = True
         v.show()
         self.b_cap.text = "Retake"
-        
+
         self.label.text = analysis_text + "\n[Sending to Telegram...]"
-        self.send_telegram_async(v.frame, analysis_text)
+        self.send_telegram_async(v.frame.copy(), analysis_text)
 
 
 class SelfieApp(App):
@@ -355,7 +344,7 @@ class SelfieApp(App):
         self.title = "Selfie AI Pro"
         if platform == "android":
             from android.permissions import request_permissions, Permission
-            request_permissions([Permission.CAMERA, Permission.INTERNET])
+            request_permissions([Permission.CAMERA])   # INTERNET comes from buildozer.spec
         return Root()
 
 
