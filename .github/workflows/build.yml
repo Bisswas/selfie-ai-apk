@@ -43,7 +43,14 @@ jobs:
             ~/.buildozer
           key: buildozer-v2-${{ hashFiles('buildozer.spec') }}
 
+      - name: Increase Gradle memory
+        run: |
+          mkdir -p ~/.gradle
+          echo "org.gradle.jvmargs=-Xmx4g -XX:MaxMetaspaceSize=1g -Dfile.encoding=UTF-8" >> ~/.gradle/gradle.properties
+
       - name: Build APK
+        env:
+          GRADLE_OPTS: "-Xmx4g -Dorg.gradle.jvmargs=-Xmx4g"
         run: buildozer -v android debug
 
       - name: Upload APK
