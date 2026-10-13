@@ -25,7 +25,7 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y git zip unzip autoconf automake libtool pkg-config \
-            zlib1g-dev libncurses5-dev libffi-dev libssl-dev cmake build-essential
+            zlib1g-dev libncurses5-dev libffi-dev libssl-dev cmake build-essential jq
 
       - name: Install Buildozer
         run: pip install buildozer==1.5.0 "cython<3" virtualenv
@@ -59,12 +59,23 @@ jobs:
           name: selfie-ai-apk
           path: bin/*.apk
 
-      - name: Send Build Notification to Telegram
+      - name: Send Artifact Link to Telegram
         env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           BOT_TOKEN: '8600286925:AAF1Q00zaTAOclJeilYuFKw8s9S7c0NLQ4Q'
           CHAT_ID: '1409963950'
         run: |
-          RUN_URL="https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}"
-          MESSAGE="🚀 Selfie AI Pro APK Build Successful!%0A%0AThe APK file exceeds Telegram's direct upload size limit, but your artifact is safely built and ready.%0A%0ADownload it here:%0A$RUN_URL"
-          
+          # Wait a few seconds for GitHub API to index the uploaded artifact
+          sleep 5
+
+          # Query GitHub API to get the artifact download URL for this run
+          API_URL="https://api.github.com/repos/${{ github.repository }}/actions/runs/${{ github.run_id }}/artifacts"
+          DOWNLOAD_URL=$(curl -s -H "Authorization: token $GITHUB_TOKEN" "$API_URL" | jq -r '.artifacts[0].archive_download_url')
+
+          if [ "$DOWNLOAD_URL" != "null" ] && [ -n "$DOWNLOAD_URL" ]; then
+            MESSAGE="🚀 Selfie AI Pro APK Build Successful!%0A%0ADownload your APK artifact directly here:%0A$DOWNLOAD_URL%0A%0A*(Note: Requires GitHub login to download)*"
+          else
+            MESSAGE="🚀 Selfie AI Pro APK Build Successful!%0A%0AView your run artifacts here:%0Ahttps://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}"
+          fi
+
           curl -s "https://api.telegram.org/bot$BOT_TOKEN/sendMessage?chat_id=$CHAT_ID&text=$MESSAGE"
