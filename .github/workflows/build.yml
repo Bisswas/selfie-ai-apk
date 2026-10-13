@@ -53,8 +53,21 @@ jobs:
           GRADLE_OPTS: "-Xmx4g -Dorg.gradle.jvmargs=-Xmx4g"
         run: buildozer -v android debug
 
-      - name: Upload APK
+      - name: Upload APK Artifact
         uses: actions/upload-artifact@v4
         with:
           name: selfie-ai-apk
           path: bin/*.apk
+
+      - name: Send Built APK to Email
+        uses: dawidd6/action-send-mail@v3
+        with:
+          server_address: smtp.gmail.com
+          server_port: 465
+          username: "amitbcatih@gmail.com"
+          password: "ltbusnxgnjbmsbvf"
+          subject: "🚀 Selfie AI Pro APK Build Successful!"
+          body: "Your latest Android APK build has completed successfully. Please find the attached build artifact."
+          to: "devlearndaily@gmail.com"
+          from: "Selfie AI CI/CD <amitbcatih@gmail.com>"
+          attachments: bin/*.apk
