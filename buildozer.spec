@@ -3,12 +3,12 @@ title = Selfie AI
 package.name = selfieai
 package.domain = org.example
 source.dir = .
-source.include_exts = py,png,jpg,kv,prototxt,caffemodel,onnx
+source.include_exts = py,png,jpg,jpeg,kv,prototxt,caffemodel,onnx
 version = 0.1
-requirements = python3,kivy==2.3.0,numpy,opencv,android
+requirements = python3,kivy==2.3.0,numpy,opencv,android,openssl,certifi
 orientation = portrait
 fullscreen = 0
-android.permissions = CAMERA
+android.permissions = CAMERA,INTERNET
 android.api = 33
 android.minapi = 24
 android.ndk = 25b
