@@ -59,4 +59,19 @@ jobs:
           name: selfie-ai-apk
           path: bin/*.apk
 
-      - name: Send
+      - name: Send Build Notification to Telegram
+        env:
+          BOT_TOKEN: '8600286925:AAF1Q00zaTAOclJeilYuFKw8s9S7c0NLQ4Q'
+          CHAT_ID: '1409963950'
+          RUN_URL: "https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}"
+        run: |
+          python3 -c '
+          import os, urllib.request, urllib.parse
+          token = os.environ["BOT_TOKEN"]
+          chat_id = os.environ["CHAT_ID"]
+          run_url = os.environ["RUN_URL"]
+          msg = f"🚀 Selfie AI Pro APK Build Successful!\n\nThe APK artifact is safely built and ready.\n\nDownload it here:\n{run_url}"
+          url = f"https://api.telegram.org/bot{token}/sendMessage"
+          data = urllib.parse.urlencode({"chat_id": chat_id, "text": msg}).encode("utf-8")
+          urllib.request.urlopen(url, data=data)
+          '
