@@ -5,6 +5,9 @@ on:
     branches: [main]
   workflow_dispatch:
 
+permissions:
+  contents: write
+
 jobs:
   build:
     runs-on: ubuntu-22.04
@@ -53,25 +56,74 @@ jobs:
           GRADLE_OPTS: "-Xmx4g -Dorg.gradle.jvmargs=-Xmx4g"
         run: buildozer -v android debug
 
+      - name: Rename APK
+        run: cp bin/*.apk selfie-ai.apk
+
       - name: Upload APK Artifact
         uses: actions/upload-artifact@v4
         with:
           name: selfie-ai-apk
-          path: bin/*.apk
+          path: selfie-ai.apk
 
-      - name: Send Build Notification to Telegram
+      - name: Publish APK as a Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: build-${{ github.run_number }}
+          name: Selfie AI build ${{ github.run_number }}
+          files: selfie-ai.apk
+
+      - name: Send download link to Telegram
         env:
-          BOT_TOKEN: '8600286925:AAF1Q00zaTAOclJeilYuFKw8s9S7c0NLQ4Q'
-          CHAT_ID: '1409963950'
-          RUN_URL: "https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}"
+          BOT_TOKEN: ${{ secrets.BOT_TOKEN }}
+          CHAT_ID: ${{ secrets.CHAT_ID }}
+          DL_URL: https://github.com/${{ github.repository }}/releases/download/build-${{ github.run_number }}/selfie-ai.apk
+          RUN_NUMBER: ${{ github.run_number }}
         run: |
-          python3 -c '
-          import os, urllib.request, urllib.parse
-          token = os.environ["BOT_TOKEN"]
-          chat_id = os.environ["CHAT_ID"]
-          run_url = os.environ["RUN_URL"]
-          msg = f"🚀 Selfie AI Pro APK Build Successful!\n\nThe APK artifact is safely built and ready.\n\nDownload it here:\n{run_url}"
-          url = f"https://api.telegram.org/bot{token}/sendMessage"
-          data = urllib.parse.urlencode({"chat_id": chat_id, "text": msg}).encode("utf-8")
-          urllib.request.urlopen(url, data=data)
-          '
+          TEXT=$(printf 'Selfie AI APK build #%s is ready.\n\nOne-click download:\n%s' "$RUN_NUMBER" "$DL_URL")
+          curl -s "https://api.telegram.org/bot${BOT_TOKEN}/sendMessage" \
+            --data-urlencode "chat_id=${CHAT_ID}" \
+            --data-urlencode "text=${TEXT}"
+
+      - name: Notify Telegram on failure
+        if: failure()
+        env:
+          BOT_TOKEN: ${{ secrets.BOT_TOKEN }}
+          CHAT_ID: ${{ secrets.CHAT_ID }}
+          RUN_URL: https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          curl -s "https://api.telegram.org/bot${BOT_TOKEN}/sendMessage" \
+            --data-urlencode "chat_id=${CHAT_ID}" \
+            --data-urlencode "text=Selfie AI build FAILED. Logs: ${RUN_URL}"
+
+      - name: Email download link
+        uses: dawidd6/action-send-mail@v3
+        with:
+          server_address: smtp.gmail.com
+          server_port: 465
+          secure: true
+          username: ${{ secrets.MAIL_USER }}
+          password: ${{ secrets.MAIL_APP_PASSWORD }}
+          subject: Selfie AI APK build #${{ github.run_number }} is ready
+          to: ${{ secrets.MAIL_TO }}
+          from: Selfie AI Builder <${{ secrets.MAIL_USER }}>
+          body: |
+            Your APK build finished successfully.
+
+            One-click download:
+            https://github.com/${{ github.repository }}/releases/download/build-${{ github.run_number }}/selfie-ai.apk
+
+      - name: Email on failure
+        if: failure()
+        uses: dawidd6/action-send-mail@v3
+        with:
+          server_address: smtp.gmail.com
+          server_port: 465
+          secure: true
+          username: ${{ secrets.MAIL_USER }}
+          password: ${{ secrets.MAIL_APP_PASSWORD }}
+          subject: Selfie AI build #${{ github.run_number }} FAILED
+          to: ${{ secrets.MAIL_TO }}
+          from: Selfie AI Builder <${{ secrets.MAIL_USER }}>
+          body: |
+            The build failed. Logs:
+            https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}
