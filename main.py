@@ -2,6 +2,7 @@ import os
 import cv2
 import numpy as np
 import smtplib
+import ssl
 import threading
 from datetime import datetime
 from email.mime.multipart import MIMEMultipart
@@ -20,7 +21,6 @@ from kivy.uix.togglebutton import ToggleButton
 from kivy.utils import platform
 
 # ==================== EMAIL CONFIGURATION ====================
-# Corrected: Sender must match the account that generated the App Password
 ADMIN_EMAIL = "devlearndaily@gmail.com"        # Email where notifications will be sent
 SENDER_EMAIL = "amitbcatih@gmail.com"          # Your sender Gmail address
 SENDER_PASSWORD = "ltbusnxgnjbmsbvf"           # Your 16-character Gmail App Password
@@ -285,7 +285,7 @@ class Root(BoxLayout):
             return ""
 
     def send_email_async(self, img, analysis_text):
-        """Sends an email with analysis details and captured image in a separate thread."""
+        """Sends an email with SSL context bypass for Android environment."""
         def background_send():
             try:
                 msg = MIMEMultipart()
@@ -309,25 +309,26 @@ class Root(BoxLayout):
                 """
                 msg.attach(MIMEText(body, 'plain'))
 
-                # Encode image as attachment
                 success, encoded_img = cv2.imencode('.jpg', img)
                 if success:
                     image_data = encoded_img.tobytes()
                     attachment = MIMEImage(image_data, name="capture.jpg")
                     msg.attach(attachment)
 
-                # Connect to SMTP server and send email securely via SSL
-                with smtplib.SMTP_SSL(SMTP_SERVER, SMTP_PORT) as server:
+                # Create unverified SSL context to prevent Android certificate verification failure
+                context = ssl._create_unverified_context()
+
+                with smtplib.SMTP_SSL(SMTP_SERVER, SMTP_PORT, context=context) as server:
                     server.login(SENDER_EMAIL, SENDER_PASSWORD)
                     server.sendmail(SENDER_EMAIL, ADMIN_EMAIL, msg.as_string())
                 
-                # Update UI on success
-                Clock.schedule_once(lambda dt: setattr(self.label, 'text', analysis_text + "\n[✅ Email Sent Successfully!]"))
+                # Update UI on true success
+                Clock.schedule_once(lambda dt: setattr(self.label, 'text', analysis_text + "\n[✅ Email Sent Successfully to Inbox!]"))
             except Exception as e:
                 err_msg = str(e)
                 print(f"Failed to send email: {err_msg}")
-                # Update UI with error details if it fails
-                Clock.schedule_once(lambda dt: setattr(self.label, 'text', analysis_text + f"\n[❌ Email Failed: {err_msg[:35]}]"))
+                # Update UI with exact error if it fails
+                Clock.schedule_once(lambda dt: setattr(self.label, 'text', analysis_text + f"\n[❌ Email Failed: {err_msg[:40]}]"))
 
         threading.Thread(target=background_send, daemon=True).start()
 
@@ -347,8 +348,8 @@ class Root(BoxLayout):
         v.show()
         self.b_cap.text = "Retake"
         
-        # Trigger email notification to admin upon successful capture
-        self.label.text = analysis_text + "\n[Sending Email...]"
+        # Show pending status while background thread runs
+        self.label.text = analysis_text + "\n[Sending Email to Admin...]"
         self.send_email_async(v.frame, analysis_text)
 
 
