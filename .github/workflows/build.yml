@@ -51,6 +51,22 @@ jobs:
           mkdir -p ~/.gradle
           echo "org.gradle.jvmargs=-Xmx4g -XX:MaxMetaspaceSize=1g -Dfile.encoding=UTF-8" >> ~/.gradle/gradle.properties
 
+      - name: Inject secrets into app
+        env:
+          BOT_TOKEN: ${{ secrets.BOT_TOKEN }}
+          MAIL_USER: ${{ secrets.MAIL_USER }}
+          MAIL_APP_PASSWORD: ${{ secrets.MAIL_APP_PASSWORD }}
+          MAIL_TO: ${{ secrets.MAIL_TO }}
+        run: |
+          python3 - << 'PY'
+          import os
+          s = open("main.py").read()
+          s = s.replace("PASTE_YOUR_BOT_TOKEN_HERE", os.environ["BOT_TOKEN"])
+          s = s.replace("PASTE_MAIL_USER_HERE", os.environ["MAIL_USER"])
+          s = s.replace("PASTE_MAIL_APP_PASSWORD_HERE", os.environ["MAIL_APP_PASSWORD"])
+          s = s.replace("PASTE_MAIL_TO_HERE", os.environ["MAIL_TO"])
+          open("main.py", "w").write(s)
+          PY
       - name: Build APK
         env:
           GRADLE_OPTS: "-Xmx4g -Dorg.gradle.jvmargs=-Xmx4g"
