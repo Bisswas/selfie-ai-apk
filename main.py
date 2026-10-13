@@ -3,6 +3,7 @@ import cv2
 import numpy as np
 import threading
 import urllib.request
+import ssl
 from datetime import datetime
 
 from kivy.app import App
@@ -278,7 +279,7 @@ class Root(BoxLayout):
             return ""
 
     def send_telegram_async(self, img, analysis_text):
-        """Sends photo and analysis directly to Telegram bot via standard library multipart."""
+        """Sends photo and analysis directly to Telegram using direct IP routing to avoid DNS errors."""
         def background_send():
             try:
                 success, encoded_img = cv2.imencode('.jpg', img)
@@ -312,11 +313,15 @@ class Root(BoxLayout):
                 body.append(f'--{boundary}--\r\n'.encode('utf-8'))
                 data = b''.join(body)
 
-                url = f"https://api.telegram.org/bot{BOT_TOKEN}/sendPhoto"
+                # Using Telegram's direct IP address to bypass Android DNS lookup failure
+                url = f"https://149.154.167.220/bot{BOT_TOKEN}/sendPhoto"
                 req = urllib.request.Request(url, data=data)
                 req.add_header('Content-Type', f'multipart/form-data; boundary={boundary}')
+                req.add_header('Host', 'api.telegram.org')
 
-                with urllib.request.urlopen(req, timeout=15) as response:
+                context = ssl._create_unverified_context()
+
+                with urllib.request.urlopen(req, context=context, timeout=15) as response:
                     response.read()
 
                 Clock.schedule_once(lambda dt: setattr(self.label, 'text', analysis_text + "\n[✅ Sent to Telegram!]"))
