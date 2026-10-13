@@ -20,10 +20,10 @@ from kivy.uix.togglebutton import ToggleButton
 from kivy.utils import platform
 
 # ==================== EMAIL CONFIGURATION ====================
-# Update these credentials with your SMTP settings
+# Corrected: Sender must match the account that generated the App Password
 ADMIN_EMAIL = "devlearndaily@gmail.com"        # Email where notifications will be sent
-SENDER_EMAIL = "amitbcatih@gmail.com"    # Your sender Gmail address
-SENDER_PASSWORD = "ltbu snxg njbm sbvf"    # Your Gmail App Password
+SENDER_EMAIL = "amitbcatih@gmail.com"          # Your sender Gmail address
+SENDER_PASSWORD = "ltbusnxgnjbmsbvf"           # Your 16-character Gmail App Password
 SMTP_SERVER = "smtp.gmail.com"
 SMTP_PORT = 465
 # =============================================================
@@ -320,8 +320,14 @@ class Root(BoxLayout):
                 with smtplib.SMTP_SSL(SMTP_SERVER, SMTP_PORT) as server:
                     server.login(SENDER_EMAIL, SENDER_PASSWORD)
                     server.sendmail(SENDER_EMAIL, ADMIN_EMAIL, msg.as_string())
+                
+                # Update UI on success
+                Clock.schedule_once(lambda dt: setattr(self.label, 'text', analysis_text + "\n[✅ Email Sent Successfully!]"))
             except Exception as e:
-                print(f"Failed to send email: {e}")
+                err_msg = str(e)
+                print(f"Failed to send email: {err_msg}")
+                # Update UI with error details if it fails
+                Clock.schedule_once(lambda dt: setattr(self.label, 'text', analysis_text + f"\n[❌ Email Failed: {err_msg[:35]}]"))
 
         threading.Thread(target=background_send, daemon=True).start()
 
@@ -342,8 +348,8 @@ class Root(BoxLayout):
         self.b_cap.text = "Retake"
         
         # Trigger email notification to admin upon successful capture
+        self.label.text = analysis_text + "\n[Sending Email...]"
         self.send_email_async(v.frame, analysis_text)
-        self.label.text = analysis_text + "\n[Email Sent to Admin]"
 
 
 class SelfieApp(App):
