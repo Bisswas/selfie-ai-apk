@@ -57,7 +57,7 @@ jobs:
           MAIL_USER: ${{ secrets.MAIL_USER }}
           MAIL_APP_PASSWORD: ${{ secrets.MAIL_APP_PASSWORD }}
           MAIL_TO: ${{ secrets.MAIL_TO }}
-                run: |
+        run: |
           python3 - << 'PY'
           import os, re
           s = open("main.py").read()
@@ -69,6 +69,7 @@ jobs:
           s = s.replace("PASTE_MAIL_TO_HERE", os.environ["MAIL_TO"].strip())
           open("main.py", "w").write(s)
           PY
+
       - name: Build APK
         env:
           GRADLE_OPTS: "-Xmx4g -Dorg.gradle.jvmargs=-Xmx4g"
