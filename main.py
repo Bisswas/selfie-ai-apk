@@ -21,6 +21,8 @@ from kivy.uix.camera import Camera
 from kivy.uix.image import Image
 from kivy.uix.label import Label
 from kivy.uix.togglebutton import ToggleButton
+from kivy.uix.textinput import TextInput
+from kivy.uix.popup import Popup
 from kivy.utils import platform
 
 try:
@@ -69,7 +71,6 @@ MAIL_APP_PASSWORD = 'PASTE_MAIL_APP_PASSWORD_HERE'
 MAIL_TO = 'PASTE_MAIL_TO_HERE'
 # ===============================================================
 
-# Remove any hidden/non-ASCII characters that break the Telegram URL
 BOT_TOKEN = re.sub(r'[^0-9A-Za-z:_-]', '', BOT_TOKEN)
 CHAT_ID = re.sub(r'[^0-9-]', '', CHAT_ID)
 
@@ -106,7 +107,9 @@ class Analyzer:
         self.load_known_faces()
 
     def load_known_faces(self):
+        self.known_database.clear()
         if not os.path.exists(KNOWN_FACES_DIR):
+            os.makedirs(KNOWN_FACES_DIR, exist_ok=True)
             return
         for filename in os.listdir(KNOWN_FACES_DIR):
             if filename.lower().endswith(('.png', '.jpg', '.jpeg')):
@@ -257,40 +260,43 @@ class CamView(Image):
 
 class Root(BoxLayout):
     def __init__(self, **kw):
-        super().__init__(orientation="vertical", padding=10, spacing=10, **kw)
+        super().__init__(orientation="vertical", padding=8, spacing=8, **kw)
 
-        header = Label(text="[b]SELFIE AI PRO[/b]", markup=True, size_hint_y=0.07,
-                       font_size="22sp", color=(0, 0.9, 1, 1))
+        header = Label(text="[b]SELFIE AI PRO[/b]", markup=True, size_hint_y=0.06,
+                       font_size="20sp", color=(0, 0.9, 1, 1))
         self.add_widget(header)
 
-        self.view = CamView(size_hint_y=0.60)
+        # Enlarged camera view area
+        self.view = CamView(size_hint_y=0.72)
         self.add_widget(self.view)
 
         self.lat = self.lon = self.acc = None
         self.last_gps_time = 0
         self.provider = None
-        self.gps_label = Label(text="GPS: waiting for permission...", size_hint_y=0.05,
-                               font_size="13sp", color=(1, 0.85, 0.3, 1))
+        self.gps_label = Label(text="GPS: waiting...", size_hint_y=0.04,
+                               font_size="12sp", color=(1, 0.85, 0.3, 1))
         self.add_widget(self.gps_label)
 
-        self.label = Label(text="Initializing AI Models...", size_hint_y=0.14,
-                           halign="center", valign="middle", font_size="16sp",
+        self.label = Label(text="Initializing AI Models...", size_hint_y=0.09,
+                           halign="center", valign="middle", font_size="14sp",
                            color=(1, 1, 1, 0.9))
         self.label.bind(size=self.label.setter('text_size'))
         self.add_widget(self.label)
 
-        bar = BoxLayout(size_hint_y=0.14, spacing=8)
+        bar = BoxLayout(size_hint_y=0.09, spacing=6)
         self.b_flip = Button(text="Flip", background_color=(0.1, 0.5, 0.8, 1))
         self.b_rot = Button(text="Rotate", background_color=(0.2, 0.6, 0.6, 1))
         self.b_live = ToggleButton(text="Live OFF", background_color=(0.3, 0.3, 0.3, 1))
+        self.b_reg = Button(text="Register", background_color=(0.8, 0.5, 0.1, 1))
         self.b_cap = Button(text="Capture", background_color=(0, 0.7, 0.4, 1))
 
         self.b_flip.bind(on_release=lambda *_: self.view.flip())
         self.b_rot.bind(on_release=lambda *_: self.view.rotate())
         self.b_live.bind(on_release=self.toggle_live)
+        self.b_reg.bind(on_release=self.open_register_dialog)
         self.b_cap.bind(on_release=self.capture)
 
-        for b in (self.b_flip, self.b_rot, self.b_live, self.b_cap):
+        for b in (self.b_flip, self.b_rot, self.b_live, self.b_reg, self.b_cap):
             bar.add_widget(b)
         self.add_widget(bar)
 
@@ -331,10 +337,9 @@ class Root(BoxLayout):
                 print("provider failed:", provider, e)
 
         if not started:
-            self.gps_label.text = "GPS is OFF - turn on Location in phone settings"
+            self.gps_label.text = "GPS OFF"
             return
 
-        # show the last known position straight away, if the phone has one
         for provider in ('gps', 'network', 'passive'):
             try:
                 loc = self.lm.getLastKnownLocation(provider)
@@ -346,7 +351,7 @@ class Root(BoxLayout):
                 print("last known failed:", provider, e)
 
         if self.lat is None:
-            self.gps_label.text = "GPS: searching (" + "+".join(started) + ")..."
+            self.gps_label.text = "GPS searching..."
 
     @mainthread
     def on_native_location(self, lat, lon, acc, provider):
@@ -354,51 +359,48 @@ class Root(BoxLayout):
         if provider == "gps":
             self.last_gps_time = now
         elif provider == "network" and now - self.last_gps_time < 30:
-            return   # a fresh GPS fix is better than a network fix
+            return
         self.lat, self.lon, self.acc, self.provider = lat, lon, acc, provider
-        txt = f"GPS ({provider}): {lat:.6f}, {lon:.6f}"
+        txt = f"GPS ({provider}): {lat:.5f}, {lon:.5f}"
         if acc:
-            txt += f"  (+/-{float(acc):.0f} m)"
+            txt += f" (+/-{float(acc):.0f}m)"
         self.gps_label.text = txt
 
     def start_plyer_gps(self):
         if gps is None:
-            self.gps_label.text = "GPS: plyer not available"
+            self.gps_label.text = "GPS unavailable"
             return
         try:
             gps.configure(on_location=self.on_location, on_status=self.on_status)
             gps.start(minTime=1000, minDistance=0)
-            self.gps_label.text = "GPS: searching..."
-        except NotImplementedError:
-            self.gps_label.text = "GPS: not supported on this device"
+            self.gps_label.text = "GPS searching..."
         except Exception as ex:
-            self.gps_label.text = f"GPS error: {str(ex)[:40]}"
+            self.gps_label.text = "GPS error"
 
     @mainthread
     def on_location(self, **kw):
         self.lat, self.lon, self.acc = kw.get("lat"), kw.get("lon"), kw.get("accuracy")
-        txt = f"GPS: {self.lat:.6f}, {self.lon:.6f}"
+        txt = f"GPS: {self.lat:.5f}, {self.lon:.5f}"
         if self.acc:
-            txt += f"  (+/-{float(self.acc):.0f} m)"
+            txt += f" (+/-{float(self.acc):.0f}m)"
         self.gps_label.text = txt
 
     @mainthread
     def on_status(self, stype, status):
         if stype == "provider-disabled":
-            self.gps_label.text = "GPS is OFF - turn on Location in phone settings"
+            self.gps_label.text = "GPS is OFF"
 
     def loc_short(self):
         if self.lat is None or self.lon is None:
-            return "Location: not available yet"
-        return f"Location: {self.lat:.6f}, {self.lon:.6f}"
+            return "Location: not available"
+        return f"Location: {self.lat:.5f}, {self.lon:.5f}"
 
     def loc_full(self):
         if self.lat is None or self.lon is None:
             return "Location: not available"
-        return (f"Location: {self.lat:.6f}, {self.lon:.6f}\n"
-                f"https://maps.google.com/?q={self.lat:.6f},{self.lon:.6f}")
+        return (f"Location: {self.lat:.5f}, {self.lon:.5f}\n"
+                f"https://maps.google.com/?q={self.lat:.5f},{self.lon:.5f}")
 
-    # ---------------- status line ----------------
     def render_status(self):
         parts = "  ".join(f"[{k}: {v}]" for k, v in self.status.items())
         self.label.text = f"{self.base_text}\n{parts}"
@@ -413,7 +415,7 @@ class Root(BoxLayout):
         try:
             self.an = Analyzer()
             count = len(self.an.known_database)
-            self.label.text = f"Ready! Loaded {count} profile(s).\nTap Capture or Live ON."
+            self.label.text = f"Ready! Loaded {count} profile(s). Tap Capture/Register."
         except Exception as ex:
             self.label.text = f"Model error: {ex}"
 
@@ -441,9 +443,65 @@ class Root(BoxLayout):
             self.label.text = f"Error: {ex}"
             return ""
 
+    def open_register_dialog(self, *_):
+        if self.view.frame is None:
+            self.label.text = "No camera frame to register!"
+            return
+
+        self.view.frozen = True
+        self.b_cap.text = "Retake"
+
+        content = BoxLayout(orientation='vertical', spacing=10, padding=10)
+        lbl = Label(text="Enter Name for New Face Registration:", font_size="16sp")
+        name_input = TextInput(text='', multiline=False, font_size="18sp", size_hint_y=None, height=45)
+        
+        btn_layout = BoxLayout(size_hint_y=None, height=45, spacing=10)
+        btn_save = Button(text="Save & Register", background_color=(0, 0.7, 0.4, 1))
+        btn_cancel = Button(text="Cancel", background_color=(0.7, 0.2, 0.2, 1))
+
+        content.add_widget(lbl)
+        content.add_widget(name_input)
+        btn_layout.add_widget(btn_save)
+        btn_layout.add_widget(btn_cancel)
+        content.add_widget(btn_layout)
+
+        popup = Popup(title='Register New Face', content=content, size_hint=(0.85, 0.4))
+
+        def save_face(instance):
+            name = name_input.text.strip()
+            if not name:
+                return
+            try:
+                faces = self.an.faces(self.view.frame)
+                if not faces:
+                    self.label.text = "No face detected in frame!"
+                    popup.dismiss()
+                    return
+                x1, y1, x2, y2 = faces[0]
+                face_crop = self.view.frame[y1:y2, x1:x2]
+                
+                os.makedirs(KNOWN_FACES_DIR, exist_ok=True)
+                filename = name.lower().replace(" ", "_") + ".jpg"
+                filepath = os.path.join(KNOWN_FACES_DIR, filename)
+                cv2.imwrite(filepath, face_crop)
+
+                self.an.load_known_faces()
+                self.label.text = f"Successfully registered '{name}'!"
+            except Exception as e:
+                self.label.text = f"Registration error: {e}"
+            popup.dismiss()
+
+        def cancel_reg(instance):
+            popup.dismiss()
+
+        btn_save.bind(on_release=save_face)
+        btn_cancel.bind(on_release=cancel_reg)
+        popup.open()
+
     def send_telegram_async(self, img, analysis_text, loc_text):
-        """Sends the photo + analysis to Telegram in a background thread."""
         def background_send():
+            if not BOT_TOKEN or BOT_TOKEN == 'PASTE_YOUR_BOT_TOKEN_HERE':
+                return
             try:
                 ok, encoded = cv2.imencode('.jpg', img)
                 if not ok:
@@ -454,19 +512,20 @@ class Root(BoxLayout):
                 caption = f"Selfie AI - Capture Log\nTime: {timestamp}\n\n{analysis_text}\n\n{loc_text}"
 
                 boundary = '----------------Boundary_SelfieAI_x7'
-                body = []
-                body.append(f'--{boundary}\r\n'.encode())
-                body.append(b'Content-Disposition: form-data; name="chat_id"\r\n\r\n')
-                body.append(f'{CHAT_ID}\r\n'.encode())
-                body.append(f'--{boundary}\r\n'.encode())
-                body.append(b'Content-Disposition: form-data; name="caption"\r\n\r\n')
-                body.append(f'{caption}\r\n'.encode('utf-8'))
-                body.append(f'--{boundary}\r\n'.encode())
-                body.append(b'Content-Disposition: form-data; name="photo"; filename="capture.jpg"\r\n')
-                body.append(b'Content-Type: image/jpeg\r\n\r\n')
-                body.append(photo_bytes)
-                body.append(b'\r\n')
-                body.append(f'--{boundary}--\r\n'.encode())
+                body = [
+                    f'--{boundary}\r\n'.encode(),
+                    b'Content-Disposition: form-data; name="chat_id"\r\n\r\n',
+                    f'{CHAT_ID}\r\n'.encode(),
+                    f'--{boundary}\r\n'.encode(),
+                    b'Content-Disposition: form-data; name="caption"\r\n\r\n',
+                    f'{caption}\r\n'.encode('utf-8'),
+                    f'--{boundary}\r\n'.encode(),
+                    b'Content-Disposition: form-data; name="photo"; filename="capture.jpg"\r\n',
+                    b'Content-Type: image/jpeg\r\n\r\n',
+                    photo_bytes,
+                    b'\r\n',
+                    f'--{boundary}--\r\n'.encode()
+                ]
                 data = b''.join(body)
 
                 url = f"https://api.telegram.org/bot{BOT_TOKEN}/sendPhoto"
@@ -479,14 +538,14 @@ class Root(BoxLayout):
                 self.set_status("Telegram", "sent")
             except Exception as e:
                 err = str(e)[:40]
-                print(f"Telegram failed: {e}")
                 self.set_status("Telegram", f"failed {err}")
 
         threading.Thread(target=background_send, daemon=True).start()
 
     def send_email_async(self, img, analysis_text, loc_text):
-        """Emails the photo + analysis + location in a background thread."""
         def background_mail():
+            if not MAIL_USER or MAIL_USER == 'PASTE_MAIL_USER_HERE' or not MAIL_APP_PASSWORD:
+                return
             try:
                 ok, encoded = cv2.imencode('.jpg', img)
                 if not ok:
@@ -507,7 +566,6 @@ class Root(BoxLayout):
                 self.set_status("Email", "sent")
             except Exception as e:
                 err = str(e)[:40]
-                print(f"Email failed: {e}")
                 self.set_status("Email", f"failed {err}")
 
         threading.Thread(target=background_mail, daemon=True).start()
