@@ -70,6 +70,27 @@ jobs:
           open("main.py", "w").write(s)
           PY
 
+      - name: Restore signing key (keeps app updates working)
+        uses: actions/cache@v4
+        with:
+          path: ~/.android/debug.keystore
+          key: debug-keystore-v1
+
+      - name: Create signing key if missing
+        run: |
+          mkdir -p ~/.android
+          if [ ! -f ~/.android/debug.keystore ]; then
+            keytool -genkey -v -keystore ~/.android/debug.keystore -storepass android \
+              -alias androiddebugkey -keypass android -keyalg RSA -keysize 2048 \
+              -validity 10000 -dname "CN=Android Debug,O=Android,C=US"
+          fi
+
+      - name: Set app version from run number
+        run: |
+          sed -i "s/^version = .*/version = 0.1.${{ github.run_number }}/" buildozer.spec
+          sed -i "/^\[app\]/a android.numeric_version = $((1000 + ${{ github.run_number }}))" buildozer.spec
+          grep -n "^version\|numeric_version" buildozer.spec
+
       - name: Build APK
         env:
           GRADLE_OPTS: "-Xmx4g -Dorg.gradle.jvmargs=-Xmx4g"
