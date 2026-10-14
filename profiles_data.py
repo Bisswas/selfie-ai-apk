@@ -2,4 +2,6 @@
 # Key = photo file name without ".jpg"  (known_faces/roni.jpg -> "roni")
 PROFILES = {
     # "roni": {"name": "Roni", "emp_id": "E101", "phone": "9000000000", "dept": "Sales"},
+
+amit": {"name": "Amit", "emp_id": "123", "phone": "8820449931", "dept": "Dev"}
 }
