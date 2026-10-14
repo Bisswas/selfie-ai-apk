@@ -1,5 +1,7 @@
 import os
+import re
 import smtplib
+import time
 import ssl
 import threading
 import urllib.request
@@ -26,6 +28,37 @@ try:
 except Exception:
     gps = None
 
+if platform == "android":
+    from jnius import autoclass, PythonJavaClass, java_method
+
+    class LocListener(PythonJavaClass):
+        __javainterfaces__ = ['android/location/LocationListener']
+        __javacontext__ = 'app'
+
+        def __init__(self, callback):
+            super().__init__()
+            self.callback = callback
+
+        @java_method('(Landroid/location/Location;)V')
+        def onLocationChanged(self, location):
+            try:
+                self.callback(location.getLatitude(), location.getLongitude(),
+                              location.getAccuracy(), location.getProvider())
+            except Exception as e:
+                print("location callback error:", e)
+
+        @java_method('(Ljava/lang/String;)V')
+        def onProviderEnabled(self, provider):
+            pass
+
+        @java_method('(Ljava/lang/String;)V')
+        def onProviderDisabled(self, provider):
+            pass
+
+        @java_method('(Ljava/lang/String;ILandroid/os/Bundle;)V')
+        def onStatusChanged(self, provider, status, extras):
+            pass
+
 # ==================== TELEGRAM CONFIGURATION ====================
 BOT_TOKEN = 'PASTE_YOUR_BOT_TOKEN_HERE'
 CHAT_ID = '1409963950'
@@ -35,6 +68,10 @@ MAIL_USER = 'PASTE_MAIL_USER_HERE'
 MAIL_APP_PASSWORD = 'PASTE_MAIL_APP_PASSWORD_HERE'
 MAIL_TO = 'PASTE_MAIL_TO_HERE'
 # ===============================================================
+
+# Remove any hidden/non-ASCII characters that break the Telegram URL
+BOT_TOKEN = re.sub(r'[^0-9A-Za-z:_-]', '', BOT_TOKEN)
+CHAT_ID = re.sub(r'[^0-9-]', '', CHAT_ID)
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 M = os.path.join(BASE_DIR, "models")
@@ -230,6 +267,8 @@ class Root(BoxLayout):
         self.add_widget(self.view)
 
         self.lat = self.lon = self.acc = None
+        self.last_gps_time = 0
+        self.provider = None
         self.gps_label = Label(text="GPS: waiting for permission...", size_hint_y=0.05,
                                font_size="13sp", color=(1, 0.85, 0.3, 1))
         self.add_widget(self.gps_label)
@@ -263,6 +302,66 @@ class Root(BoxLayout):
 
     # ---------------- GPS ----------------
     def start_gps(self, *_):
+        self.last_gps_time = 0
+        self.provider = None
+        if platform == "android":
+            try:
+                self.start_native_location()
+                return
+            except Exception as ex:
+                print("native location failed:", ex)
+        self.start_plyer_gps()
+
+    def start_native_location(self):
+        PythonActivity = autoclass('org.kivy.android.PythonActivity')
+        Context = autoclass('android.content.Context')
+        Looper = autoclass('android.os.Looper')
+        activity = PythonActivity.mActivity
+        self.lm = activity.getSystemService(Context.LOCATION_SERVICE)
+        self.loc_listener = LocListener(self.on_native_location)
+        looper = Looper.getMainLooper()
+
+        started = []
+        for provider in ('gps', 'network'):
+            try:
+                if self.lm.isProviderEnabled(provider):
+                    self.lm.requestLocationUpdates(provider, 1000, 0.0, self.loc_listener, looper)
+                    started.append(provider)
+            except Exception as e:
+                print("provider failed:", provider, e)
+
+        if not started:
+            self.gps_label.text = "GPS is OFF - turn on Location in phone settings"
+            return
+
+        # show the last known position straight away, if the phone has one
+        for provider in ('gps', 'network', 'passive'):
+            try:
+                loc = self.lm.getLastKnownLocation(provider)
+                if loc is not None:
+                    self.on_native_location(loc.getLatitude(), loc.getLongitude(),
+                                            loc.getAccuracy(), provider + "-last")
+                    break
+            except Exception as e:
+                print("last known failed:", provider, e)
+
+        if self.lat is None:
+            self.gps_label.text = "GPS: searching (" + "+".join(started) + ")..."
+
+    @mainthread
+    def on_native_location(self, lat, lon, acc, provider):
+        now = time.time()
+        if provider == "gps":
+            self.last_gps_time = now
+        elif provider == "network" and now - self.last_gps_time < 30:
+            return   # a fresh GPS fix is better than a network fix
+        self.lat, self.lon, self.acc, self.provider = lat, lon, acc, provider
+        txt = f"GPS ({provider}): {lat:.6f}, {lon:.6f}"
+        if acc:
+            txt += f"  (+/-{float(acc):.0f} m)"
+        self.gps_label.text = txt
+
+    def start_plyer_gps(self):
         if gps is None:
             self.gps_label.text = "GPS: plyer not available"
             return
