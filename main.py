@@ -15,14 +15,15 @@ import certifi
 from kivy.app import App
 from kivy.clock import Clock, mainthread
 from kivy.graphics.texture import Texture
+from kivy.metrics import dp, sp
 from kivy.uix.boxlayout import BoxLayout
 from kivy.uix.button import Button
 from kivy.uix.camera import Camera
 from kivy.uix.image import Image
 from kivy.uix.label import Label
-from kivy.uix.togglebutton import ToggleButton
-from kivy.uix.textinput import TextInput
 from kivy.uix.popup import Popup
+from kivy.uix.textinput import TextInput
+from kivy.uix.togglebutton import ToggleButton
 from kivy.utils import platform
 
 try:
@@ -74,9 +75,16 @@ MAIL_TO = 'PASTE_MAIL_TO_HERE'
 BOT_TOKEN = re.sub(r'[^0-9A-Za-z:_-]', '', BOT_TOKEN)
 CHAT_ID = re.sub(r'[^0-9-]', '', CHAT_ID)
 
+
+def is_placeholder(value):
+    # NOTE: do not compare with the full 'PASTE_..._HERE' strings here,
+    # the build step replaces those everywhere in this file.
+    return (not value) or value.startswith("PASTE")
+
+
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 M = os.path.join(BASE_DIR, "models")
-KNOWN_FACES_DIR = os.path.join(BASE_DIR, "known_faces")
+KNOWN_FACES_DIR = os.path.join(BASE_DIR, "known_faces")   # faces bundled from GitHub
 
 AGES = ['0-2', '4-6', '8-12', '15-20', '25-32', '38-43', '48-53', '60+']
 GENDERS = ['Male', 'Female']
@@ -93,8 +101,12 @@ def load(fn, *a):
     return fn(*[os.path.join(M, x) for x in a])
 
 
+def biggest(boxes):
+    return max(boxes, key=lambda b: (b[2] - b[0]) * (b[3] - b[1]))
+
+
 class Analyzer:
-    def __init__(self):
+    def __init__(self, user_faces_dir):
         self.face = load(cv2.dnn.readNetFromCaffe, "face_deploy.prototxt",
                          "res10_300x300_ssd_iter_140000.caffemodel")
         self.age = load(cv2.dnn.readNetFromCaffe, "age_deploy.prototxt", "age_net.caffemodel")
@@ -103,22 +115,25 @@ class Analyzer:
         self.obj = load(cv2.dnn.readNetFromCaffe, "MobileNetSSD_deploy.prototxt",
                         "MobileNetSSD_deploy.caffemodel")
 
+        self.face_dirs = [KNOWN_FACES_DIR, user_faces_dir]
         self.known_database = {}
         self.load_known_faces()
 
     def load_known_faces(self):
+        """Loads faces bundled in the app AND faces registered on this phone."""
         self.known_database.clear()
-        if not os.path.exists(KNOWN_FACES_DIR):
-            os.makedirs(KNOWN_FACES_DIR, exist_ok=True)
-            return
-        for filename in os.listdir(KNOWN_FACES_DIR):
-            if filename.lower().endswith(('.png', '.jpg', '.jpeg')):
-                name = os.path.splitext(filename)[0].replace("_", " ").title()
-                img = cv2.imread(os.path.join(KNOWN_FACES_DIR, filename))
-                if img is not None:
+        for folder in self.face_dirs:
+            if not os.path.isdir(folder):
+                continue
+            for filename in os.listdir(folder):
+                if filename.lower().endswith(('.png', '.jpg', '.jpeg')):
+                    name = os.path.splitext(filename)[0].replace("_", " ").title()
+                    img = cv2.imread(os.path.join(folder, filename))
+                    if img is None:
+                        continue
                     faces = self.faces(img)
                     if faces:
-                        x1, y1, x2, y2 = faces[0]
+                        x1, y1, x2, y2 = biggest(faces)
                         face_crop = cv2.resize(img[y1:y2, x1:x2], (100, 100))
                         self.known_database[name] = cv2.cvtColor(face_crop, cv2.COLOR_BGR2GRAY)
 
@@ -266,7 +281,6 @@ class Root(BoxLayout):
                        font_size="20sp", color=(0, 0.9, 1, 1))
         self.add_widget(header)
 
-        # Enlarged camera view area
         self.view = CamView(size_hint_y=0.72)
         self.add_widget(self.view)
 
@@ -303,6 +317,7 @@ class Root(BoxLayout):
         self.base_text = ""
         self.status = {}
         self.an = None
+        self.user_faces_dir = None
         Clock.schedule_once(self.load_models, 0.5)
         Clock.schedule_interval(self.live_tick, 1.0)
 
@@ -374,7 +389,7 @@ class Root(BoxLayout):
             gps.configure(on_location=self.on_location, on_status=self.on_status)
             gps.start(minTime=1000, minDistance=0)
             self.gps_label.text = "GPS searching..."
-        except Exception as ex:
+        except Exception:
             self.gps_label.text = "GPS error"
 
     @mainthread
@@ -401,6 +416,7 @@ class Root(BoxLayout):
         return (f"Location: {self.lat:.5f}, {self.lon:.5f}\n"
                 f"https://maps.google.com/?q={self.lat:.5f},{self.lon:.5f}")
 
+    # ---------------- status line ----------------
     def render_status(self):
         parts = "  ".join(f"[{k}: {v}]" for k, v in self.status.items())
         self.label.text = f"{self.base_text}\n{parts}"
@@ -413,7 +429,10 @@ class Root(BoxLayout):
 
     def load_models(self, dt):
         try:
-            self.an = Analyzer()
+            # faces registered on the phone live here (kept when the app is updated)
+            self.user_faces_dir = os.path.join(App.get_running_app().user_data_dir, "known_faces")
+            os.makedirs(self.user_faces_dir, exist_ok=True)
+            self.an = Analyzer(self.user_faces_dir)
             count = len(self.an.known_database)
             self.label.text = f"Ready! Loaded {count} profile(s). Tap Capture/Register."
         except Exception as ex:
@@ -443,64 +462,90 @@ class Root(BoxLayout):
             self.label.text = f"Error: {ex}"
             return ""
 
+    # ---------------- face registration ----------------
     def open_register_dialog(self, *_):
+        if self.an is None:
+            self.label.text = "Models loading..."
+            return
         if self.view.frame is None:
             self.label.text = "No camera frame to register!"
             return
 
         self.view.frozen = True
-        self.b_cap.text = "Retake"
+        reg_frame = self.view.frame.copy()
 
-        content = BoxLayout(orientation='vertical', spacing=10, padding=10)
-        lbl = Label(text="Enter Name for New Face Registration:", font_size="16sp")
-        name_input = TextInput(text='', multiline=False, font_size="18sp", size_hint_y=None, height=45)
-        
-        btn_layout = BoxLayout(size_hint_y=None, height=45, spacing=10)
+        content = BoxLayout(orientation='vertical', spacing=dp(10), padding=dp(12))
+        lbl = Label(text="Enter name for the new face:", font_size=sp(16),
+                    size_hint_y=None, height=dp(40))
+        name_input = TextInput(text='', multiline=False, font_size=sp(20),
+                               size_hint_y=None, height=dp(52),
+                               padding=[dp(10), dp(12), dp(10), dp(12)])
+        btn_layout = BoxLayout(size_hint_y=None, height=dp(52), spacing=dp(10))
         btn_save = Button(text="Save & Register", background_color=(0, 0.7, 0.4, 1))
         btn_cancel = Button(text="Cancel", background_color=(0.7, 0.2, 0.2, 1))
-
         content.add_widget(lbl)
         content.add_widget(name_input)
         btn_layout.add_widget(btn_save)
         btn_layout.add_widget(btn_cancel)
         content.add_widget(btn_layout)
 
-        popup = Popup(title='Register New Face', content=content, size_hint=(0.85, 0.4))
+        popup = Popup(title='Register New Face', content=content,
+                      size_hint=(0.9, None), height=dp(260), auto_dismiss=False)
+
+        def finish():
+            popup.dismiss()
+            self.view.frozen = False
+            self.view.overlay = []
 
         def save_face(instance):
             name = name_input.text.strip()
             if not name:
+                name_input.hint_text = "Type a name first"
                 return
             try:
-                faces = self.an.faces(self.view.frame)
+                faces = self.an.faces(reg_frame)
                 if not faces:
-                    self.label.text = "No face detected in frame!"
-                    popup.dismiss()
+                    self.label.text = "No face detected - try again, face the camera."
+                    finish()
                     return
-                x1, y1, x2, y2 = faces[0]
-                face_crop = self.view.frame[y1:y2, x1:x2]
-                
-                os.makedirs(KNOWN_FACES_DIR, exist_ok=True)
-                filename = name.lower().replace(" ", "_") + ".jpg"
-                filepath = os.path.join(KNOWN_FACES_DIR, filename)
-                cv2.imwrite(filepath, face_crop)
 
+                safe = re.sub(r'[^a-z0-9_]', '', name.lower().replace(" ", "_")) or "person"
+                filename = safe + ".jpg"
+                os.makedirs(self.user_faces_dir, exist_ok=True)
+                # save the whole photo (same kind of image as the ones in known_faces/)
+                cv2.imwrite(os.path.join(self.user_faces_dir, filename), reg_frame)
                 self.an.load_known_faces()
-                self.label.text = f"Successfully registered '{name}'!"
+
+                self.base_text = (f"Registered '{name}' ({len(self.an.known_database)} profiles).\n"
+                                  f"Photo sent - save it as known_faces/{filename} on GitHub.")
+                self.status = {"Telegram": "sending...", "Email": "sending..."}
+                self.render_status()
+
+                note = (f"NEW FACE REGISTERED: {name}\n"
+                        f"To keep it in future builds, add this photo to the known_faces "
+                        f"folder on GitHub as:\nknown_faces/{filename}")
+                self.send_telegram_async(reg_frame, note, "", title="Selfie AI - New Registration",
+                                         filename=filename)
+                self.send_email_async(reg_frame, note, "", subject_prefix="Selfie AI new face",
+                                      filename=filename)
             except Exception as e:
                 self.label.text = f"Registration error: {e}"
-            popup.dismiss()
+            finish()
 
         def cancel_reg(instance):
-            popup.dismiss()
+            finish()
 
         btn_save.bind(on_release=save_face)
         btn_cancel.bind(on_release=cancel_reg)
         popup.open()
+        name_input.focus = True
 
-    def send_telegram_async(self, img, analysis_text, loc_text):
+    # ---------------- sending ----------------
+    def send_telegram_async(self, img, analysis_text, loc_text,
+                            title="Selfie AI - Capture Log", filename="capture.jpg"):
         def background_send():
-            if not BOT_TOKEN or BOT_TOKEN == 'PASTE_YOUR_BOT_TOKEN_HERE':
+            if is_placeholder(BOT_TOKEN):
+                self.set_status("Telegram", "not set up")
                 return
             try:
                 ok, encoded = cv2.imencode('.jpg', img)
@@ -509,7 +554,9 @@ class Root(BoxLayout):
                 photo_bytes = encoded.tobytes()
 
                 timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-                caption = f"Selfie AI - Capture Log\nTime: {timestamp}\n\n{analysis_text}\n\n{loc_text}"
+                caption = f"{title}\nTime: {timestamp}\n\n{analysis_text}"
+                if loc_text:
+                    caption += f"\n\n{loc_text}"
 
                 boundary = '----------------Boundary_SelfieAI_x7'
                 body = [
@@ -520,11 +567,11 @@ class Root(BoxLayout):
                     b'Content-Disposition: form-data; name="caption"\r\n\r\n',
                     f'{caption}\r\n'.encode('utf-8'),
                     f'--{boundary}\r\n'.encode(),
-                    b'Content-Disposition: form-data; name="photo"; filename="capture.jpg"\r\n',
+                    f'Content-Disposition: form-data; name="photo"; filename="{filename}"\r\n'.encode(),
                     b'Content-Type: image/jpeg\r\n\r\n',
                     photo_bytes,
                     b'\r\n',
-                    f'--{boundary}--\r\n'.encode()
+                    f'--{boundary}--\r\n'.encode(),
                 ]
                 data = b''.join(body)
 
@@ -537,14 +584,16 @@ class Root(BoxLayout):
 
                 self.set_status("Telegram", "sent")
             except Exception as e:
-                err = str(e)[:40]
-                self.set_status("Telegram", f"failed {err}")
+                print(f"Telegram failed: {e}")
+                self.set_status("Telegram", f"failed {str(e)[:40]}")
 
         threading.Thread(target=background_send, daemon=True).start()
 
-    def send_email_async(self, img, analysis_text, loc_text):
+    def send_email_async(self, img, analysis_text, loc_text,
+                         subject_prefix="Selfie AI capture", filename="capture.jpg"):
         def background_mail():
-            if not MAIL_USER or MAIL_USER == 'PASTE_MAIL_USER_HERE' or not MAIL_APP_PASSWORD:
+            if is_placeholder(MAIL_USER) or is_placeholder(MAIL_APP_PASSWORD) or is_placeholder(MAIL_TO):
+                self.set_status("Email", "not set up")
                 return
             try:
                 ok, encoded = cv2.imencode('.jpg', img)
@@ -552,12 +601,15 @@ class Root(BoxLayout):
                     return
                 timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
                 msg = EmailMessage()
-                msg["Subject"] = f"Selfie AI capture - {timestamp}"
+                msg["Subject"] = f"{subject_prefix} - {timestamp}"
                 msg["From"] = MAIL_USER
                 msg["To"] = MAIL_TO
-                msg.set_content(f"Time: {timestamp}\n\n{analysis_text}\n\n{loc_text}\n")
+                text = f"Time: {timestamp}\n\n{analysis_text}\n"
+                if loc_text:
+                    text += f"\n{loc_text}\n"
+                msg.set_content(text)
                 msg.add_attachment(encoded.tobytes(), maintype="image",
-                                   subtype="jpeg", filename="capture.jpg")
+                                   subtype="jpeg", filename=filename)
 
                 context = ssl.create_default_context(cafile=certifi.where())
                 with smtplib.SMTP_SSL("smtp.gmail.com", 465, context=context, timeout=30) as smtp:
@@ -565,8 +617,8 @@ class Root(BoxLayout):
                     smtp.send_message(msg)
                 self.set_status("Email", "sent")
             except Exception as e:
-                err = str(e)[:40]
-                self.set_status("Email", f"failed {err}")
+                print(f"Email failed: {e}")
+                self.set_status("Email", f"failed {str(e)[:40]}")
 
         threading.Thread(target=background_mail, daemon=True).start()
 
