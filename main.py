@@ -1,3 +1,4 @@
+import json
 import os
 import re
 import smtplib
@@ -14,6 +15,7 @@ import certifi
 
 from kivy.app import App
 from kivy.clock import Clock, mainthread
+from kivy.core.window import Window
 from kivy.graphics.texture import Texture
 from kivy.metrics import dp, sp
 from kivy.uix.boxlayout import BoxLayout
@@ -82,6 +84,11 @@ def is_placeholder(value):
     return (not value) or value.startswith("PASTE")
 
 
+try:
+    from profiles_data import PROFILES as BUNDLED_PROFILES   # optional file in the repo root
+except Exception:
+    BUNDLED_PROFILES = {}
+
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 M = os.path.join(BASE_DIR, "models")
 KNOWN_FACES_DIR = os.path.join(BASE_DIR, "known_faces")   # faces bundled from GitHub
@@ -106,7 +113,7 @@ def biggest(boxes):
 
 
 class Analyzer:
-    def __init__(self, user_faces_dir):
+    def __init__(self, user_faces_dir, profiles):
         self.face = load(cv2.dnn.readNetFromCaffe, "face_deploy.prototxt",
                          "res10_300x300_ssd_iter_140000.caffemodel")
         self.age = load(cv2.dnn.readNetFromCaffe, "age_deploy.prototxt", "age_net.caffemodel")
@@ -115,6 +122,7 @@ class Analyzer:
         self.obj = load(cv2.dnn.readNetFromCaffe, "MobileNetSSD_deploy.prototxt",
                         "MobileNetSSD_deploy.caffemodel")
 
+        self.profiles = profiles          # shared dict: {stem: {name, emp_id, phone, dept}}
         self.face_dirs = [KNOWN_FACES_DIR, user_faces_dir]
         self.known_database = {}
         self.load_known_faces()
@@ -127,7 +135,7 @@ class Analyzer:
                 continue
             for filename in os.listdir(folder):
                 if filename.lower().endswith(('.png', '.jpg', '.jpeg')):
-                    name = os.path.splitext(filename)[0].replace("_", " ").title()
+                    name = os.path.splitext(filename)[0].lower()   # key = file name without .jpg
                     img = cv2.imread(os.path.join(folder, filename))
                     if img is None:
                         continue
@@ -202,15 +210,30 @@ class Analyzer:
                 out.append((name, conf, (max(0, x1), max(0, y1), min(w, x2), min(h, y2))))
         return out
 
+    def label_for(self, key):
+        """(display name, 'ID x | Dept') for a known person."""
+        p = self.profiles.get(key) or {}
+        name = p.get("name") or key.replace("_", " ").title()
+        extra = []
+        if p.get("emp_id"):
+            extra.append(f"ID {p['emp_id']}")
+        if p.get("dept"):
+            extra.append(p["dept"])
+        return name, " | ".join(extra)
+
     def analyze(self, img):
         boxes = self.faces(img)
         if boxes:
             lines, items = [], []
             for n, b in enumerate(boxes, 1):
-                name, g, a, e = self.person(img, b)
-                display_name = name if name != "Unknown" else f"Unknown Person {n}"
-                lines.append(f"{display_name}: {g}, Age {a}, {e}")
-                items.append((b, f"{display_name} | {g}, {a}"))
+                key, g, a, e = self.person(img, b)
+                if key == "Unknown":
+                    name, extra = f"Unknown Person {n}", ""
+                else:
+                    name, extra = self.label_for(key)
+                who = f"{name} ({extra})" if extra else name
+                lines.append(f"{who}: {g}, Age {a}, {e}")
+                items.append((b, f"{name} | {g}, {a}"))
             return "\n".join(lines), items
 
         objs = self.objects(img)
@@ -318,6 +341,9 @@ class Root(BoxLayout):
         self.status = {}
         self.an = None
         self.user_faces_dir = None
+        self.profiles = {}        # all details (bundled + registered on this phone)
+        self.user_profiles = {}   # only the ones registered on this phone
+        self.profiles_path = None
         Clock.schedule_once(self.load_models, 0.5)
         Clock.schedule_interval(self.live_tick, 1.0)
 
@@ -432,11 +458,31 @@ class Root(BoxLayout):
             # faces registered on the phone live here (kept when the app is updated)
             self.user_faces_dir = os.path.join(App.get_running_app().user_data_dir, "known_faces")
             os.makedirs(self.user_faces_dir, exist_ok=True)
-            self.an = Analyzer(self.user_faces_dir)
+            self.profiles_path = os.path.join(App.get_running_app().user_data_dir, "profiles.json")
+            self.load_profiles()
+            self.an = Analyzer(self.user_faces_dir, self.profiles)
             count = len(self.an.known_database)
             self.label.text = f"Ready! Loaded {count} profile(s). Tap Capture/Register."
         except Exception as ex:
             self.label.text = f"Model error: {ex}"
+
+    def load_profiles(self):
+        self.profiles.clear()
+        self.user_profiles.clear()
+        self.profiles.update(BUNDLED_PROFILES)
+        try:
+            if self.profiles_path and os.path.exists(self.profiles_path):
+                with open(self.profiles_path, encoding="utf-8") as f:
+                    data = json.load(f)
+                if isinstance(data, dict):
+                    self.user_profiles.update(data)
+                    self.profiles.update(data)
+        except Exception as e:
+            print("profiles load error:", e)
+
+    def save_profiles(self):
+        with open(self.profiles_path, "w", encoding="utf-8") as f:
+            json.dump(self.user_profiles, f, ensure_ascii=False, indent=2)
 
     def toggle_live(self, *_):
         on = self.b_live.state == "down"
@@ -474,23 +520,33 @@ class Root(BoxLayout):
         self.view.frozen = True
         reg_frame = self.view.frame.copy()
 
-        content = BoxLayout(orientation='vertical', spacing=dp(10), padding=dp(12))
-        lbl = Label(text="Enter name for the new face:", font_size=sp(16),
-                    size_hint_y=None, height=dp(40))
-        name_input = TextInput(text='', multiline=False, font_size=sp(20),
-                               size_hint_y=None, height=dp(52),
-                               padding=[dp(10), dp(12), dp(10), dp(12)])
-        btn_layout = BoxLayout(size_hint_y=None, height=dp(52), spacing=dp(10))
+        content = BoxLayout(orientation='vertical', spacing=dp(8), padding=dp(12))
+
+        def field(hint, **kw):
+            return TextInput(hint_text=hint, multiline=False, font_size=sp(18),
+                             size_hint_y=None, height=dp(48), write_tab=False,
+                             padding=[dp(10), dp(11), dp(10), dp(11)], **kw)
+
+        f_name = field("Name (required)")
+        f_id = field("Employee / ID")
+        f_phone = field("Phone number", input_type="tel")
+        f_dept = field("Department")
+        fields = [f_name, f_id, f_phone, f_dept]
+        for cur, nxt in zip(fields, fields[1:]):
+            cur.bind(on_text_validate=lambda inst, n=nxt: setattr(n, "focus", True))
+
+        btn_layout = BoxLayout(size_hint_y=None, height=dp(48), spacing=dp(10))
         btn_save = Button(text="Save & Register", background_color=(0, 0.7, 0.4, 1))
         btn_cancel = Button(text="Cancel", background_color=(0.7, 0.2, 0.2, 1))
-        content.add_widget(lbl)
-        content.add_widget(name_input)
         btn_layout.add_widget(btn_save)
         btn_layout.add_widget(btn_cancel)
+
+        for w in fields:
+            content.add_widget(w)
         content.add_widget(btn_layout)
 
         popup = Popup(title='Register New Face', content=content,
-                      size_hint=(0.9, None), height=dp(260), auto_dismiss=False)
+                      size_hint=(0.92, None), height=dp(370), auto_dismiss=False)
 
         def finish():
             popup.dismiss()
@@ -498,10 +554,12 @@ class Root(BoxLayout):
             self.view.overlay = []
 
         def save_face(instance):
-            name = name_input.text.strip()
+            name = f_name.text.strip()
             if not name:
-                name_input.hint_text = "Type a name first"
+                f_name.hint_text = "Name is required"
                 return
+            data = {"name": name, "emp_id": f_id.text.strip(),
+                    "phone": f_phone.text.strip(), "dept": f_dept.text.strip()}
             try:
                 faces = self.an.faces(reg_frame)
                 if not faces:
@@ -509,21 +567,29 @@ class Root(BoxLayout):
                     finish()
                     return
 
-                safe = re.sub(r'[^a-z0-9_]', '', name.lower().replace(" ", "_")) or "person"
-                filename = safe + ".jpg"
+                stem = re.sub(r'[^a-z0-9_]', '', name.lower().replace(" ", "_")) or "person"
+                filename = stem + ".jpg"
                 os.makedirs(self.user_faces_dir, exist_ok=True)
                 # save the whole photo (same kind of image as the ones in known_faces/)
                 cv2.imwrite(os.path.join(self.user_faces_dir, filename), reg_frame)
+
+                self.user_profiles[stem] = data
+                self.profiles[stem] = data
+                self.save_profiles()
                 self.an.load_known_faces()
 
-                self.base_text = (f"Registered '{name}' ({len(self.an.known_database)} profiles).\n"
-                                  f"Photo sent - save it as known_faces/{filename} on GitHub.")
+                self.base_text = (f"Registered {name} (ID {data['emp_id'] or '-'}, "
+                                  f"{data['dept'] or '-'}). {len(self.an.known_database)} profiles.")
                 self.status = {"Telegram": "sending...", "Email": "sending..."}
                 self.render_status()
 
-                note = (f"NEW FACE REGISTERED: {name}\n"
-                        f"To keep it in future builds, add this photo to the known_faces "
-                        f"folder on GitHub as:\nknown_faces/{filename}")
+                snippet = f'    "{stem}": {json.dumps(data, ensure_ascii=False)},'
+                note = (f"NEW FACE REGISTERED\n"
+                        f"Name: {name}\nID: {data['emp_id'] or '-'}\n"
+                        f"Phone: {data['phone'] or '-'}\nDepartment: {data['dept'] or '-'}\n\n"
+                        f"To keep it in future builds:\n"
+                        f"1) add this photo to GitHub as known_faces/{filename}\n"
+                        f"2) add this line inside PROFILES in profiles_data.py:\n{snippet}")
                 self.send_telegram_async(reg_frame, note, "", title="Selfie AI - New Registration",
                                          filename=filename)
                 self.send_email_async(reg_frame, note, "", subject_prefix="Selfie AI new face",
@@ -538,7 +604,7 @@ class Root(BoxLayout):
         btn_save.bind(on_release=save_face)
         btn_cancel.bind(on_release=cancel_reg)
         popup.open()
-        name_input.focus = True
+        f_name.focus = True
 
     # ---------------- sending ----------------
     def send_telegram_async(self, img, analysis_text, loc_text,
@@ -650,6 +716,7 @@ class Root(BoxLayout):
 class SelfieApp(App):
     def build(self):
         self.title = "Selfie AI Pro"
+        Window.softinput_mode = "below_target"
         root = Root()
         if platform == "android":
             from android.permissions import request_permissions, Permission
