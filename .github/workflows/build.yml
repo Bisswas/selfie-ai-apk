@@ -57,14 +57,16 @@ jobs:
           MAIL_USER: ${{ secrets.MAIL_USER }}
           MAIL_APP_PASSWORD: ${{ secrets.MAIL_APP_PASSWORD }}
           MAIL_TO: ${{ secrets.MAIL_TO }}
-        run: |
+                run: |
           python3 - << 'PY'
-          import os
+          import os, re
           s = open("main.py").read()
-          s = s.replace("PASTE_YOUR_BOT_TOKEN_HERE", os.environ["BOT_TOKEN"])
-          s = s.replace("PASTE_MAIL_USER_HERE", os.environ["MAIL_USER"])
-          s = s.replace("PASTE_MAIL_APP_PASSWORD_HERE", os.environ["MAIL_APP_PASSWORD"])
-          s = s.replace("PASTE_MAIL_TO_HERE", os.environ["MAIL_TO"])
+          tok = os.environ["BOT_TOKEN"].strip()
+          assert re.fullmatch(r"\d+:[A-Za-z0-9_-]+", tok), "BOT_TOKEN secret has invalid characters - delete and re-create it"
+          s = s.replace("PASTE_YOUR_BOT_TOKEN_HERE", tok)
+          s = s.replace("PASTE_MAIL_USER_HERE", os.environ["MAIL_USER"].strip())
+          s = s.replace("PASTE_MAIL_APP_PASSWORD_HERE", os.environ["MAIL_APP_PASSWORD"].strip())
+          s = s.replace("PASTE_MAIL_TO_HERE", os.environ["MAIL_TO"].strip())
           open("main.py", "w").write(s)
           PY
       - name: Build APK
